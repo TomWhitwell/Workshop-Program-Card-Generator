@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Workshop Program Card Generator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.5;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.5em;
+    }
+
+    .note {
+      background: #f4f4f4;
+      padding: 12px;
+      border-left: 4px solid #999;
+      margin: 1em 0;
+      font-size: 0.9rem;
+    }
+
+    .upload {
+      margin: 1.5em 0;
+    }
+
+    input[type="file"] {
+      display: block;
+      margin: 0.5em 0;
+    }
+
+    button {
+      padding: 10px 16px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .status {
+      margin-top: 1.5em;
+      font-weight: bold;
+    }
+
+    .proof {
+      margin-top: 1em;
+    }
+
+    .proof img {
+      max-width: 100%;
+      border: 1px solid #ccc;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Workshop Program Card Generator</h1>
+
+  <p>
+    Upload custom artwork as SVG and receive a ready-to-manufacture
+    Gerber ZIP with the artwork merged onto the front solder mask.
+  </p>
+
+  <div class="note">
+    <strong>SVG requirements:</strong><br>
+    • Paths only (no text)<br>
+    • Physical size set in mm<br>
+    • Filled shapes, no strokes<br>
+    • Artwork is non-electrical
+  </div>
+
+  <div class="upload">
+    <label>
+      Upload <strong>1 or 4 SVG files</strong>:
+      <input id="svgInput" type="file" accept=".svg" multiple />
+    </label>
+  </div>
+
+  <button id="submitBtn" disabled>
+    Generate PCB
+  </button>
+
+  <div id="status" class="status hidden"></div>
+
+  <div id="proof" class="proof hidden">
+    <h3>Proof</h3>
+    <img id="proofImg" alt="PCB proof" />
+  </div>
+
+  <div id="download" class="hidden">
+    <p>
+      <a id="zipLink" href="#" download>
+        Download Gerbers (.zip)
+      </a>
+    </p>
+  </div>
+
+<script>
+  const svgInput = document.getElementById("svgInput");
+  const submitBtn = document.getElementById("submitBtn");
+  const statusEl = document.getElementById("status");
+  const proofEl = document.getElementById("proof");
+  const proofImg = document.getElementById("proofImg");
+  const downloadEl = document.getElementById("download");
+  const zipLink = document.getElementById("zipLink");
+
+  let selectedFiles = [];
+
+  svgInput.addEventListener("change", () => {
+    selectedFiles = Array.from(svgInput.files);
+
+    const valid =
+      selectedFiles.length === 1 ||
+      selectedFiles.length === 4;
+
+    submitBtn.disabled = !valid;
+  });
+
+  submitBtn.addEventListener("click", async () => {
+    submitBtn.disabled = true;
+    status("Uploading…");
+
+    // --- POC: fake job flow ---
+    // Replace this whole block with real API calls later
+
+    await delay(800);
+    status("Processing…");
+
+    await delay(1500);
+    status("Done");
+
+    // Fake proof + download
+    proofImg.src = "https://via.placeholder.com/800x220?text=PCB+Proof";
+    zipLink.href = "#";
+
+    proofEl.classList.remove("hidden");
+    downloadEl.classList.remove("hidden");
+  });
+
+  function status(text) {
+    statusEl.textContent = text;
+    statusEl.classList.remove("hidden");
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+</script>
+
+</body>
+</html>
