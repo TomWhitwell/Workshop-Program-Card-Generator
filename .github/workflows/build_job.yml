@@ -44,6 +44,7 @@ jobs:
 
           # Copy committed shell Gerbers into a working folder
           cp -R templates/shell/Gerbers/. work/gerbers/
+          cp -R templates/shell/payload work/payload
 
           # Sanity check base mask exists
           test -f "work/gerbers/4-up-blank-F_Mask.gts"
@@ -97,11 +98,35 @@ jobs:
           test -s work/out/proof.png
 
 
-      - name: Zip gerbers
+      - name: Build bundle.zip (payload + Gerbers.zip)
         run: |
           set -euo pipefail
-          (cd work/gerbers && zip -r ../out/bundle.zip .)
-          ls -lh work/out/bundle.zip
+          mkdir -p work/out
+
+          # Sanity checks
+          test -d work/gerbers
+          test -f work/gerbers/4-up-blank-F_Mask.gts
+
+          # Ensure payload exists in the workspace (copied from templates)
+          # If you already copy it earlier, keep this as just a sanity check.
+          test -d work/payload
+          test -f work/payload/bom.csv
+          test -f work/payload/positions.csv
+          test -f work/payload/readme.md
+
+          # 1) Zip modified Gerbers into work/out/Gerbers.zip
+          rm -f work/out/Gerbers.zip
+          (cd work/gerbers && zip -q -r ../out/Gerbers.zip .)
+
+          # 2) Create outer bundle.zip with Gerbers.zip + payload files at top level
+          rm -f work/out/bundle.zip
+          (cd work/out && zip -q bundle.zip Gerbers.zip)
+
+          # -j = junk paths -> puts files at top of bundle.zip
+          zip -q -j work/out/bundle.zip work/payload/bom.csv work/payload/positions.csv work/payload/readme.md
+
+          ls -lh work/out/Gerbers.zip work/out/bundle.zip
+
 
       - name: Upload outputs to R2
         run: |
