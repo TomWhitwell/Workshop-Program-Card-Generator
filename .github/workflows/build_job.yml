@@ -40,13 +40,14 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf work
-          mkdir -p work/in work/out work/shell
+          mkdir -p work/in work/out work/gerbers
 
-          # Copy committed shell template files into a working folder
-          cp -R templates/shell/. work/shell/
+          # Copy committed shell Gerbers into a working folder
+          cp -R templates/shell/Gerbers/. work/gerbers/
 
           # Sanity check base mask exists
-          test -f "work/shell/4-up-blank-F_Mask.gts"
+          test -f "work/gerbers/4-up-blank-F_Mask.gts"
+          echo "Found base mask: work/gerbers/4-up-blank-F_Mask.gts"
 
       - name: Download SVG inputs from R2
         run: |
@@ -64,8 +65,8 @@ jobs:
           set -euo pipefail
 
           python3 tools/append_svg_to_mask_gts.py \
-            --base-gts "work/shell/4-up-blank-F_Mask.gts" \
-            --out-gts  "work/shell/4-up-blank-F_Mask.gts" \
+            --base-gts "work/gerbers/4-up-blank-F_Mask.gts" \
+            --out-gts  "work/gerbers/4-up-blank-F_Mask.gts" \
             --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
             --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
             --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
@@ -89,11 +90,11 @@ jobs:
           print("Wrote work/out/proof.png")
           PY
 
-      - name: Zip shell folder
+      - name: Zip gerbers
         run: |
           set -euo pipefail
-          (cd work/shell && zip -r ../out/bundle.zip .)
-          ls -lh work/out/bundle.zip work/out/proof.png
+          (cd work/gerbers && zip -r ../out/bundle.zip .)
+          ls -lh work/out/bundle.zip
 
       - name: Upload outputs to R2
         run: |
