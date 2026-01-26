@@ -107,3 +107,15 @@ jobs:
           echo "Uploaded:"
           echo " - jobs/${JOB}/out/bundle.zip"
           echo " - jobs/${JOB}/out/proof.png"
+      - name: Notify Pages that job is done
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          RUNNER_SECRET: ${{ secrets.RUNNER_SHARED_SECRET }}
+          SITE_BASE: https://pcg.musicthing.co.uk
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "$SITE_BASE/api/job/$JOB_ID/update" \
+            -H "content-type: application/json" \
+            -H "x-runner-secret: $RUNNER_SECRET" \
+            --data '{"status":"done"}'
+
