@@ -1,0 +1,108 @@
+name: Build PCB art job
+run-name: Build job ${{ inputs.job_id }} by ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Job ID (matches R2 prefix jobs/<job_id>/...)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_DEFAULT_REGION: auto
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v5
+
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user svgpathtools
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install AWS CLI (via pip)
+        run: |
+          python3 -m pip install --user --upgrade awscli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          aws --version
+
+      - name: Prepare workspace
+        run: |
+          set -euo pipefail
+          rm -rf work
+          mkdir -p work/in work/out work/shell
+
+          # Copy committed shell template files into a working folder
+          cp -R templates/shell/. work/shell/
+
+          # Sanity check base mask exists
+          test -f "work/shell/4-up-blank-F_Mask.gts"
+
+      - name: Download SVG inputs from R2
+        run: |
+          set -euo pipefail
+          JOB="${{ inputs.job_id }}"
+
+          for i in 1 2 3 4; do
+            KEY="jobs/${JOB}/in/slot${i}.svg"
+            echo "Downloading s3://$R2_BUCKET/$KEY"
+            aws s3 cp "s3://$R2_BUCKET/$KEY" "work/in/slot${i}.svg" --endpoint-url "$R2_ENDPOINT"
+          done
+
+      - name: Run SVG->Gerber append (4 placements)
+        run: |
+          set -euo pipefail
+
+          python3 tools/append_svg_to_mask_gts.py \
+            --base-gts "work/shell/4-up-blank-F_Mask.gts" \
+            --out-gts  "work/shell/4-up-blank-F_Mask.gts" \
+            --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
+            --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
+            --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
+            --svg "work/in/slot4.svg" --place 86.67,43.45 --rotate 180
+
+      - name: Install Pillow for placeholder proof
+        run: |
+          python3 -m pip install --user pillow
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Create proof PNG (placeholder)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          img = Image.new("RGB",(900,250),(255,255,255))
+          d = ImageDraw.Draw(img)
+          d.text((20,20),"PCB Art Job Proof (placeholder)", fill=(0,0,0))
+          d.text((20,70),"Next step: render a real preview from SVG or Gerber", fill=(0,0,0))
+          img.save("work/out/proof.png")
+          print("Wrote work/out/proof.png")
+          PY
+
+      - name: Zip shell folder
+        run: |
+          set -euo pipefail
+          (cd work/shell && zip -r ../out/bundle.zip .)
+          ls -lh work/out/bundle.zip work/out/proof.png
+
+      - name: Upload outputs to R2
+        run: |
+          set -euo pipefail
+          JOB="${{ inputs.job_id }}"
+
+          aws s3 cp "work/out/bundle.zip" "s3://$R2_BUCKET/jobs/${JOB}/out/bundle.zip" --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "work/out/proof.png"  "s3://$R2_BUCKET/jobs/${JOB}/out/proof.png"  --endpoint-url "$R2_ENDPOINT"
+
+          echo "Uploaded:"
+          echo " - jobs/${JOB}/out/bundle.zip"
+          echo " - jobs/${JOB}/out/proof.png"
