@@ -72,23 +72,30 @@ jobs:
             --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
             --svg "work/in/slot4.svg" --place 86.67,43.45 --rotate 180
 
-      - name: Install Pillow for placeholder proof
-        run: |
-          python3 -m pip install --user pillow
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Create proof PNG (placeholder)
+      - name: Install gerbv (for proof rendering)
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from PIL import Image, ImageDraw
-          img = Image.new("RGB",(900,250),(255,255,255))
-          d = ImageDraw.Draw(img)
-          d.text((20,20),"PCB Art Job Proof (placeholder)", fill=(0,0,0))
-          d.text((20,70),"Next step: render a real preview from SVG or Gerber", fill=(0,0,0))
-          img.save("work/out/proof.png")
-          print("Wrote work/out/proof.png")
-          PY
+          sudo apt-get update
+          sudo apt-get install -y gerbv
+
+      - name: Render proof PNG
+        run: |
+          set -euo pipefail
+          mkdir -p work/out
+
+          # Render Edge Cuts + F_Mask into a proof PNG.
+          # Notes:
+          # -D controls DPI. 300 is usually readable; 600 is crisper but larger.
+          # Some gerbv builds accept --dpi; on Ubuntu it's usually -D.
+          gerbv \
+            -x png \
+            -D 400 \
+            -o work/out/proof.png \
+            work/gerbers/4-up-blank-Edge_Cuts.gm1 \
+            work/gerbers/4-up-blank-F_Mask.gts
+
+          test -s work/out/proof.png
+
 
       - name: Zip gerbers
         run: |
@@ -103,6 +110,7 @@ jobs:
 
           aws s3 cp "work/out/bundle.zip" "s3://$R2_BUCKET/jobs/${JOB}/out/bundle.zip" --endpoint-url "$R2_ENDPOINT"
           aws s3 cp "work/out/proof.png"  "s3://$R2_BUCKET/jobs/${JOB}/out/proof.png"  --endpoint-url "$R2_ENDPOINT"
+ 
 
           echo "Uploaded:"
           echo " - jobs/${JOB}/out/bundle.zip"
