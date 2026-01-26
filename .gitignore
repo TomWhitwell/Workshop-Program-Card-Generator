@@ -1,0 +1,102 @@
+# -------------------------------------------------------------------
+# OS / editor cruft
+# -------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# -------------------------------------------------------------------
+# Python / venv / tooling
+# -------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+*.log
+
+# -------------------------------------------------------------------
+# Node / Cloudflare / frontend
+# -------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.wrangler/
+.wrangler-state/
+.wrangler-cache/
+.wrangler/deployments/
+.dev.vars
+.env
+.env.*
+*.local
+
+# -------------------------------------------------------------------
+# Cloudflare Pages build output (varies by framework)
+# -------------------------------------------------------------------
+dist/
+out/
+build/
+.output/
+.next/
+.svelte-kit/
+.nuxt/
+.cache/
+.parcel-cache/
+
+# -------------------------------------------------------------------
+# Generated artifacts (PCB jobs)
+# -------------------------------------------------------------------
+jobs/
+tmp/
+temp/
+*.zip
+*.png
+*.pdf
+
+# Gerber outputs / drill maps (keep templates tracked, ignore generated)
+*.gts
+*.gtl
+*.gbl
+*.gbs
+*.gto
+*.gbo
+*.gtp
+*.gbp
+*.gm1
+*.drl
+*-drl_map.gbr
+
+# BUT keep your committed shell/template gerbers
+!templates/**
+
+# -------------------------------------------------------------------
+# Misc
+# -------------------------------------------------------------------
+*.bak
+*.tmp
+*.orig
