@@ -1,6 +1,6 @@
 name: R2 smoketest
 
-on:
+"on:"
   workflow_dispatch:
 
 jobs:
