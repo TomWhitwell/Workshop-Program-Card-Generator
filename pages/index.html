@@ -118,67 +118,69 @@
   const downloadEl = document.getElementById("download");
   const zipLink = document.getElementById("zipLink");
 
-  let selectedFiles = [];
+  function status(msg) {
+    statusEl.textContent = msg;
+    statusEl.classList.remove("hidden");
+  }
 
   svgInput.addEventListener("change", () => {
-    selectedFiles = Array.from(svgInput.files);
-
-    const valid =
-      selectedFiles.length === 1 ||
-      selectedFiles.length === 4;
-
+    const files = Array.from(svgInput.files || []);
+    const valid = (files.length === 1 || files.length === 4);
     submitBtn.disabled = !valid;
   });
 
-submitBtn.addEventListener("click", async () => {
-  submitBtn.disabled = true;
-  status("Uploading…");
+  submitBtn.addEventListener("click", async () => {
+    submitBtn.disabled = true;
+    status("Uploading…");
 
-  const files = Array.from(svgInput.files || []);
-  if (!(files.length === 1 || files.length === 4)) {
-    status("Please upload exactly 1 or 4 SVG files.");
-    submitBtn.disabled = false;
-    return;
-  }
-
-  const fd = new FormData();
-  for (const f of files) fd.append("svgs", f, f.name);
-
-  const createRes = await fetch("/api/job", { method: "POST", body: fd });
-  const createJson = await createRes.json();
-
-  if (!createRes.ok) {
-    status(`Error: ${createJson.error || "job create failed"}`);
-    submitBtn.disabled = false;
-    return;
-  }
-
-  const jobId = createJson.jobId;
-  status(`Processing… (${jobId})`);
-
-  // poll
-  while (true) {
-    await new Promise(r => setTimeout(r, 1200));
-    const r = await fetch(`/api/job/${jobId}`);
-    const j = await r.json();
-
-    if (j.status === "done") {
-      status("Done");
-      proofImg.src = j.proofUrl + `?t=${Date.now()}`;
-      zipLink.href = j.zipUrl;
-
-      proofEl.classList.remove("hidden");
-      downloadEl.classList.remove("hidden");
-      break;
+    const files = Array.from(svgInput.files || []);
+    if (!(files.length === 1 || files.length === 4)) {
+      status("Please upload exactly 1 or 4 SVG files.");
+      submitBtn.disabled = false;
+      return;
     }
-    if (j.status === "error") {
-      status(`Error: ${j.error || "unknown"}`);
-      break;
-    }
-  }
 
-  submitBtn.disabled = false;
-});
+    try {
+      const fd = new FormData();
+      for (const f of files) fd.append("svgs", f, f.name);
+
+      const createRes = await fetch("/api/job", { method: "POST", body: fd });
+      const createJson = await createRes.json();
+
+      if (!createRes.ok) {
+        status(`Error: ${createJson.error || "job create failed"}`);
+        submitBtn.disabled = false;
+        return;
+      }
+
+      const jobId = createJson.jobId;
+      status(`Processing… (${jobId})`);
+
+      while (true) {
+        await new Promise(r => setTimeout(r, 1200));
+        const res = await fetch(`/api/job/${jobId}`);
+        const j = await res.json();
+
+        if (j.status === "done") {
+          status("Done");
+          proofImg.src = j.proofUrl + `?t=${Date.now()}`;
+          zipLink.href = j.zipUrl;
+
+          proofEl.classList.remove("hidden");
+          downloadEl.classList.remove("hidden");
+          break;
+        }
+        if (j.status === "error") {
+          status(`Error: ${j.error || "unknown"}`);
+          break;
+        }
+      }
+    } catch (err) {
+      status(`Error: ${err && err.message ? err.message : String(err)}`);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
 </script>
 
 </body>
