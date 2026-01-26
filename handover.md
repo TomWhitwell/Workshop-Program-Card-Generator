@@ -1,191 +1,185 @@
 
-# Workshop Program Card Generator
+# Workshop Program Card Generator  
+## Technical Handover & System Overview
 
-**Handover / Architecture Notes**
+This repository implements a low-traffic web service that allows users to upload custom SVG artwork and receive a ready-to-manufacture PCB Gerber ZIP, with that artwork merged onto the **front solder mask** layer of a fixed PCB design.
 
-This project provides a very low-traffic web service that allows users to upload custom SVG artwork and receive a ready-to-manufacture PCB Gerber ZIP, with the artwork merged onto the **front solder mask** layer of a fixed PCB design.
+The system is deliberately simple, deterministic, and conservative.  
+Artwork is **non-electrical**, and SVGs must already conform to strict rules.
 
-The system is intentionally simple, deterministic, and robust. There is **no electrical relevance** to the artwork; users must adhere to fixed SVG rules.
+This document describes the **current, working architecture**, not earlier experiments.
+
+---
+
+## What the system does (in one sentence)
+
+> Takes 1 or 4 user-supplied SVGs, places them at fixed positions on a known PCB solder-mask layer, generates a proof image, and returns a zipped Gerber set.
 
 ---
 
 ## High-level Architecture
 
-The system is split into three responsibilities:
+The system has four components:
 
-1. **Static UI (Cloudflare Pages)**
+1. **Static frontend** (Cloudflare Pages)  
+2. **API layer** (Cloudflare Pages Functions)  
+3. **Job runner** (GitHub Actions)  
+4. **Storage** (Cloudflare R2 + KV)
 
-   * Upload 1 or 4 SVG files
-   * Poll job status
-   * Display PNG proof
-   * Download final ZIP
-
-2. **Job Orchestration API (Cloudflare Worker)**
-
-   * Accept uploads
-   * Store inputs in R2
-   * Create a `job_id`
-   * Trigger GitHub Actions runner
-   * Track job status
-
-3. **Job Runner (GitHub Actions)**
-
-   * Fetch SVGs from R2
-   * Merge artwork into Gerbers using Python
-   * Generate proof image
-   * Bundle output ZIP
-   * Upload results back to R2
-
-All heavy computation happens in **GitHub Actions**, not Workers.
+Crucially:
+- **All heavy work happens in GitHub Actions**
+- Workers/Functions only orchestrate jobs and serve files
 
 ---
 
-## Repository Structure (current)
+## Live Deployment
+
+- Public site + API:  
+  **https://pcg.musicthing.co.uk**
+
+- Cloudflare R2 bucket (internal):  
+  `pcb-art-jobs`
+
+---
+
+## Repository Layout (authoritative)
 
 ```
+
 Workshop-Program-Card-Generator/
+├─ pages/
+│  └─ index.html                  # Static UI
+│
+├─ functions/                     # Cloudflare Pages Functions
+│  └─ api/
+│     ├─ job.ts                   # POST /api/job
+│     └─ job/
+│        ├─ [id].ts               # GET /api/job/:id
+│        └─ [id]/
+│           ├─ update.ts          # POST /api/job/:id/update
+│           ├─ proof.png.ts       # GET proof image
+│           └─ bundle.zip.ts      # GET Gerber ZIP
+│
 ├─ tools/
-│  └─ append_svg_to_mask_gts.py        # Core SVG → Gerber logic
+│  └─ append_svg_to_mask_gts.py   # Core SVG → Gerber logic
 │
 ├─ templates/
 │  └─ shell/
-│     └─ Gerbers/                      # Fixed PCB shell (committed)
-│        ├─ 4-up-blank-F_Mask.gts
-│        ├─ 4-up-blank-F_Cu.gtl
-│        ├─ ...
+│     ├─ Gerbers/                # Fixed PCB shell (committed)
+│     │  ├─ 4-up-blank-F_Mask.gts
+│     │  ├─ 4-up-blank-F_Cu.gtl
+│     │  └─ ...
+│     ├─ bom.csv
+│     ├─ positions.csv
+│     └─ readme.md
 │
 ├─ .github/
 │  └─ workflows/
-│     ├─ r2_smoketest.yml              # Verifies R2 credentials
-│     └─ build_job.yml                 # Main job runner
+│     ├─ r2_smoketest.yml
+│     └─ build_job.yml            # Main job runner
 │
-└─ (future)
-   ├─ worker/                          # Cloudflare Worker API
-   └─ pages/                           # Static upload UI
+└─ handover.md
+
 ```
 
-Key principle: **the shell Gerbers live in the repo** so the runner is deterministic and doesn’t depend on external templates.
+---
+
+## Cloudflare Pages configuration (IMPORTANT)
+
+This project **must** be configured as follows:
+
+- **Root directory:** repository root  
+- **Build command:** none  
+- **Build output directory:** none / empty  
+
+Reason:
+- Pages Functions are only detected when `functions/` exists at repo root.
+- If the root directory is set to `pages/`, Functions are silently ignored and `/api/*` routes fall through to static files.
+
+This configuration is now confirmed working.
 
 ---
 
 ## Data Flow
 
-### 1. Job creation
+### 1. Job creation (frontend → API)
 
-* User uploads SVG(s) via the UI
-* Worker generates a unique `job_id`
-* Worker writes inputs to R2:
+- User uploads **exactly 1 or 4 SVG files**
+- Frontend sends `POST /api/job` with multipart form data
+- API function:
+  - Validates file count
+  - Generates a `job_id`
+  - Stores SVGs in R2 under:
 
 ```
+
 jobs/<job_id>/in/slot1.svg
 jobs/<job_id>/in/slot2.svg
 jobs/<job_id>/in/slot3.svg
 jobs/<job_id>/in/slot4.svg
+
 ```
 
-(If only one SVG is uploaded, it is duplicated across slots.)
+- If only one SVG is uploaded, it is duplicated into all four slots
+- Job metadata is written to KV
+- A GitHub Actions workflow is dispatched
 
-### 2. Job execution
+---
 
-* Worker triggers GitHub Action via `workflow_dispatch`, passing `job_id`
-* GitHub Action:
+### 2. Job execution (GitHub Actions)
 
-  1. Copies `templates/shell/Gerbers/` → `work/gerbers/`
-  2. Downloads SVG inputs from R2
-  3. Runs `append_svg_to_mask_gts.py` to modify:
+The `build_job.yml` workflow:
 
-     ```
-     work/gerbers/4-up-blank-F_Mask.gts
-     ```
-  4. Generates a proof PNG
-  5. Zips the Gerbers
+1. Checks out this repository
+2. Copies fixed Gerbers from:
+```
 
-### 3. Job output
+templates/shell/Gerbers/
 
-Results are written back to R2:
+````
+3. Downloads SVG inputs from R2
+4. Runs the Python tool:
+
+```bash
+python tools/append_svg_to_mask_gts.py \
+--base-gts work/gerbers/4-up-blank-F_Mask.gts \
+--out-gts  work/gerbers/4-up-blank-F_Mask.gts \
+--svg slot1.svg --place 62.93,30.4  --rotate 0 \
+--svg slot2.svg --place 62.93,43.4  --rotate 0 \
+--svg slot3.svg --place 86.65,30.45 --rotate 180 \
+--svg slot4.svg --place 86.67,43.45 --rotate 180
+````
+
+5. Generates a PNG proof
+6. Zips the full Gerber set
+7. Uploads outputs to R2:
 
 ```
 jobs/<job_id>/out/bundle.zip
 jobs/<job_id>/out/proof.png
 ```
 
-Worker updates job status so the UI can present download links.
+8. Calls:
 
----
-
-## GitHub Actions: `build_job.yml`
-
-Core responsibilities:
-
-* Python + awscli installed via `pip` (no apt)
-* Uses R2 via S3-compatible API
-* Uses **fixed placement coordinates + rotations**
-
-Current “golden” placement example:
-
-```bash
-python tools/append_svg_to_mask_gts.py \
-  --base-gts work/gerbers/4-up-blank-F_Mask.gts \
-  --out-gts  work/gerbers/4-up-blank-F_Mask.gts \
-  --svg slot1.svg --place 62.93,30.4  --rotate 0 \
-  --svg slot2.svg --place 62.93,43.4  --rotate 0 \
-  --svg slot3.svg --place 86.65,30.45 --rotate 180 \
-  --svg slot4.svg --place 86.67,43.45 --rotate 180
+```
+POST /api/job/<job_id>/update
 ```
 
-The mask file is modified **in place**.
+to mark the job as complete
 
 ---
 
-## Core Python Tool: `append_svg_to_mask_gts.py`
+### 3. Polling & download (frontend)
 
-### Responsibilities
+* Frontend polls `GET /api/job/:id`
+* When status becomes `done`:
 
-* Parse SVG paths
-* Correctly handle:
-
-  * viewBox
-  * mm scaling
-  * Y-axis inversion (SVG vs Gerber)
-  * fill rules (nonzero / evenodd)
-  * nested shapes (holes)
-* Convert paths to Gerber regions
-* Append artwork into an existing `.gts` file
-* Support:
-
-  * multiple SVGs
-  * multiple placements
-  * per-SVG rotation about centre
-
-### Explicitly *not* supported
-
-* Fonts
-* Text rendering
-* Boolean ops
-* Error recovery
-* Arbitrary scaling or snapping
-
-SVGs must be **pre-prepared** in Illustrator/Inkscape.
-
----
-
-## SVG Input Requirements (important)
-
-Users must supply SVGs that:
-
-* Have explicit physical dimensions (e.g. `width="19mm" height="11mm"`)
-* Use paths only (no text)
-* Are filled shapes (not strokes)
-* Use consistent winding
-* Assume artwork will be used **only as solder mask opening**
-
-The script deliberately assumes correctness — no validation is performed.
+  * Proof image available at `/api/job/:id/proof.png`
+  * Gerber ZIP available at `/api/job/:id/bundle.zip`
 
 ---
 
 ## R2 Storage Layout
-
-Single bucket: `pcb-art-jobs`
 
 ```
 pcb-art-jobs/
@@ -197,94 +191,122 @@ pcb-art-jobs/
       │  ├─ slot3.svg
       │  └─ slot4.svg
       └─ out/
-         ├─ bundle.zip
-         └─ proof.png
+         ├─ proof.png
+         └─ bundle.zip
 ```
 
-This design guarantees:
-
-* Perfect isolation between jobs
-* Safe concurrency
-* Easy cleanup
+Jobs are fully isolated and safe to run concurrently.
 
 ---
 
-## Concurrency & Safety
+## SVG Input Requirements (strict)
 
-* Each job has a unique prefix → no collisions
-* GitHub Actions handles concurrent jobs natively
-* R2 is effectively infinite for this scale
-* Traffic is assumed to be **very low** (≈ 1 job/hour max)
+SVGs **must**:
 
-No locking, queues, or rate limiting required.
+* Declare physical size in mm (e.g. `width="19mm" height="11mm"`)
+* Use paths only (no text objects)
+* Use filled shapes (no strokes)
+* Have correct winding for holes
+* Assume usage as **solder-mask openings only**
 
----
-
-## Cost Model
-
-* Cloudflare Pages: free
-* Cloudflare Workers: pennies/month at this scale
-* R2: negligible (tiny files, low traffic)
-* GitHub Actions: free tier sufficient
+The system intentionally performs **no SVG validation** beyond file count.
 
 ---
 
-## Known “Sharp Edges”
+## Core Python Tool
 
-* YAML `on:` syntax in this repo **only reliably works** with:
+### `append_svg_to_mask_gts.py`
 
-  ```yaml
-  on: [workflow_dispatch]
-  ```
+Responsibilities:
 
-  (multi-line mapping caused parsing errors here)
-* Proof generation is currently a placeholder
+* Parse SVG paths correctly
+* Respect `viewBox` and mm scaling
+* Handle SVG ↔ Gerber Y-axis inversion
+* Preserve hole geometry and nested paths
+* Convert paths to Gerber regions
+* Append regions into an existing `.gts` file
+* Support:
+
+  * Multiple SVGs
+  * Arbitrary placement
+  * Rotation about SVG centre
+
+Explicitly **not supported**:
+
+* Fonts or text rendering
+* Boolean path operations
+* Stroke expansion
+* Error recovery
+* Heuristic fixes
+
+SVGs must be prepared correctly upstream.
+
+---
+
+## Secrets & Bindings
+
+### Cloudflare
+
+* **R2 bucket binding:** `JOBS_BUCKET`
+* **KV namespace binding:** `JOBS_KV`
+
+### Secrets
+
+* `GITHUB_TOKEN` (fine-grained PAT)
+* `GITHUB_OWNER`
+* `GITHUB_REPO`
+* `GITHUB_WORKFLOW_FILE`
+* `RUNNER_SHARED_SECRET`
+
+---
+
+## GitHub Token Permissions (minimal)
+
+Fine-grained PAT:
+
+* Repository access:
+  `Workshop-Program-Card-Generator`
+* Permissions:
+
+  * **Actions: Read & write**
+  * Metadata: Read (required)
+  * Contents: No access
+  * Workflows: No access
+
+This token can dispatch workflows but cannot modify the repo.
+
+---
+
+## Concurrency & Cost Model
+
+* Jobs are isolated by ID
+* GitHub Actions handles concurrency safely
+* Expected load: ~1 job/hour
+* Costs:
+
+  * Pages + Functions: effectively free
+  * R2 storage/bandwidth: negligible
+  * GitHub Actions: well within free tier
+
+---
+
+## Known Sharp Edges
+
+* Pages root directory misconfiguration silently disables Functions
 * SVG correctness is assumed, not enforced
+* Proof rendering is functional, not polished
+* No automatic cleanup of old jobs (yet)
 
 ---
 
-## Obvious Next Steps
-
-1. **Worker API**
-
-   * `POST /api/job`
-   * `GET /api/job/:id`
-   * `POST /api/job/:id/update`
-
-2. **Proof rendering**
-
-   * Likely approach:
-
-     * Generate a simple “proof SVG”
-     * Rasterize using `resvg` in Actions
-
-3. **Static UI**
-
-   * Plain HTML + JS
-   * No framework required
-
-4. **Optional**
-
-   * Auto-cleanup old jobs in R2
-   * Add job expiry timestamps
-
----
-
-## Design Philosophy (intentional)
+## Design Philosophy
 
 * Deterministic
 * Boring
-* Minimal
-* No magic
-* No clever heuristics
+* Manufacturing-first
+* No “magic”
+* No UI-side creativity
 
-This is a **manufacturing pipeline**, not a graphics app.
+This is a **manufacturing pipeline**, not a graphics editor.
 
----
-
-If you want, next I can:
-
-* Turn this into a proper `HANDOVER.md` file ready to commit
-* Sketch the Worker API in TypeScript
-* Design the upload UI HTML
-* Or freeze the current state as a tagged release
+```

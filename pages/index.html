@@ -2,185 +2,574 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Workshop Program Card Generator</title>
+  <title>Program Card Generator</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <style>
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      max-width: 720px;
-      margin: 40px auto;
-      padding: 0 20px;
-      line-height: 1.5;
+    :root{
+      --bg:#ffffff;
+      --fg:#111111;
+      --muted:#666666;
+      --line:#dddddd;
+      --panel:#f6f6f6;
+      --accent:#111111; /* keep it monochrome */
+      --ok:#0a7a2f;
+      --bad:#b00020;
+      --radius:10px;
     }
 
-    h1 {
-      font-size: 1.6rem;
-      margin-bottom: 0.5em;
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body{
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.35;
     }
 
-    .note {
-      background: #f4f4f4;
-      padding: 12px;
-      border-left: 4px solid #999;
-      margin: 1em 0;
-      font-size: 0.9rem;
+    .wrap{
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 28px 18px 60px;
     }
 
-    .upload {
-      margin: 1.5em 0;
+    header{
+      padding: 10px 0 14px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 18px;
     }
 
-    input[type="file"] {
-      display: block;
-      margin: 0.5em 0;
+    .brand{
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      font-size: 28px;
+      margin: 0 0 6px;
     }
 
-    button {
-      padding: 10px 16px;
-      font-size: 1rem;
+    .sub{
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      max-width: 70ch;
+    }
+
+    .grid{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .card{
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      padding: 16px;
+    }
+
+    .card h2{
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: -0.01em;
+    }
+
+    .rules{
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 12px 12px;
+      border: 1px solid #eaeaea;
+      color: var(--fg);
+      font-size: 14px;
+    }
+
+    .rules ul{
+      margin: 8px 0 0 18px;
+      padding: 0;
+      color: var(--muted);
+    }
+
+    .drop{
+      border: 2px dashed #cfcfcf;
+      border-radius: var(--radius);
+      padding: 18px;
+      background: #fbfbfb;
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.05s ease;
       cursor: pointer;
+      user-select: none;
     }
 
-    button:disabled {
-      opacity: 0.5;
+    .drop.dragover{
+      border-color: #888;
+      background: #f2f2f2;
+    }
+
+    .drop .big{
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0 0 4px;
+      letter-spacing: -0.01em;
+    }
+
+    .drop .small{
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .row{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 12px;
+    }
+
+    button{
+      appearance: none;
+      border: 1px solid var(--fg);
+      background: var(--fg);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.05s ease, opacity 0.2s ease;
+    }
+    button:active{ transform: translateY(1px); }
+    button:disabled{
+      opacity: 0.45;
       cursor: default;
     }
 
-    .status {
-      margin-top: 1.5em;
-      font-weight: bold;
+    .ghost{
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--fg);
+      font-weight: 700;
     }
 
-    .proof {
-      margin-top: 1em;
+    .files{
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 6px;
     }
 
-    .proof img {
+    .fileline{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .fileline strong{ color: var(--fg); font-weight: 700; }
+    .badge{
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #fff;
+      white-space: nowrap;
+    }
+
+    .status{
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .status .top{
+      display:flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+    }
+
+    .status .msg{
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+    .status .meta{
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .bar{
+      margin-top: 10px;
+      height: 10px;
+      background: #efefef;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid #e5e5e5;
+    }
+    .bar > div{
+      height: 100%;
+      width: 0%;
+      background: #111;
+      transition: width 0.25s ease;
+    }
+
+    .hint{
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .ok{ color: var(--ok); }
+    .bad{ color: var(--bad); }
+
+    .proof{
+      margin-top: 14px;
+    }
+    .proof img{
       max-width: 100%;
-      border: 1px solid #ccc;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
     }
 
-    .hidden {
-      display: none;
+    a{
+      color: var(--fg);
+      text-decoration: underline;
+      text-underline-offset: 2px;
     }
+
+    footer{
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* hide native file input */
+    #svgInput{ position:absolute; left:-9999px; width:1px; height:1px; }
   </style>
 </head>
+
 <body>
+  <div class="wrap">
+    <header>
+      <h1 class="brand">Program Card Generator</h1>
+      <p class="sub">
+        Upload your SVG artwork and get a ready-to-order Gerber ZIP.
+        Artwork is merged into the <strong>front solder mask</strong> only.
+      </p>
+    </header>
 
-  <h1>Workshop Program Card Generator</h1>
+    <div class="grid">
+      <div class="card">
+        <h2>1) Upload SVG</h2>
 
-  <p>
-    Upload custom artwork as SVG and receive a ready-to-manufacture
-    Gerber ZIP with the artwork merged onto the front solder mask.
-  </p>
+        <div class="rules">
+          <strong>SVG rules (must already be correct)</strong>
+          <ul>
+            <li>Upload <strong>1</strong> SVG (used in all 4 positions) or <strong>4</strong> SVGs (one per slot)</li>
+            <li>Paths only (no live text). Filled shapes, not strokes.</li>
+            <li>Explicit mm size (e.g. width/height in mm) and a valid viewBox.</li>
+            <li>No electrical meaning — this is just mask openings.</li>
+          </ul>
+        </div>
 
-  <div class="note">
-    <strong>SVG requirements:</strong><br>
-    • Paths only (no text)<br>
-    • Physical size set in mm<br>
-    • Filled shapes, no strokes<br>
-    • Artwork is non-electrical
-  </div>
+        <input id="svgInput" type="file" accept=".svg" multiple />
 
-  <div class="upload">
-    <label>
-      Upload <strong>1 or 4 SVG files</strong>:
-      <input id="svgInput" type="file" accept=".svg" multiple />
-    </label>
-  </div>
+        <div id="dropZone" class="drop" role="button" tabindex="0" aria-label="Upload SVG files">
+          <p class="big">Drop 1 or 4 SVG files here</p>
+          <p class="small">…or click to browse</p>
+        </div>
 
-  <button id="submitBtn" disabled>
-    Generate PCB
-  </button>
+        <div class="row">
+          <button id="submitBtn" disabled>Generate PCB</button>
+          <button id="clearBtn" class="ghost" disabled>Clear</button>
+          <span id="validHint" class="badge">Select 1 or 4 SVGs</span>
+        </div>
 
-  <div id="status" class="status hidden"></div>
+        <div id="fileList" class="files" style="display:none;"></div>
 
-  <div id="proof" class="proof hidden">
-    <h3>Proof</h3>
-    <img id="proofImg" alt="PCB proof" />
-  </div>
+        <div id="statusBox" class="status" style="display:none;">
+          <div class="top">
+            <p id="statusMsg" class="msg">—</p>
+            <p id="statusMeta" class="meta">—</p>
+          </div>
+          <div class="bar" aria-hidden="true"><div id="progressFill"></div></div>
+          <div id="statusHint" class="hint"></div>
+        </div>
 
-  <div id="download" class="hidden">
-    <p>
-      <a id="zipLink" href="#" download>
-        Download Gerbers (.zip)
-      </a>
-    </p>
+        <div id="proof" class="proof" style="display:none;">
+          <h2 style="margin-top:18px;">2) Proof</h2>
+          <img id="proofImg" alt="PCB proof" />
+          <div class="row" style="margin-top:10px;">
+            <a id="zipLink" href="#" download>Download Gerbers (.zip)</a>
+          </div>
+        </div>
+
+        <footer>
+          Tip: if a job takes ~90 seconds, that’s normal. The bar is an estimate; the real completion is when the proof appears.
+        </footer>
+      </div>
+    </div>
   </div>
 
 <script>
   const svgInput = document.getElementById("svgInput");
+  const dropZone = document.getElementById("dropZone");
   const submitBtn = document.getElementById("submitBtn");
-  const statusEl = document.getElementById("status");
-  const proofEl = document.getElementById("proof");
+  const clearBtn = document.getElementById("clearBtn");
+  const validHint = document.getElementById("validHint");
+
+  const fileList = document.getElementById("fileList");
+
+  const statusBox = document.getElementById("statusBox");
+  const statusMsg = document.getElementById("statusMsg");
+  const statusMeta = document.getElementById("statusMeta");
+  const statusHint = document.getElementById("statusHint");
+  const progressFill = document.getElementById("progressFill");
+
+  const proofWrap = document.getElementById("proof");
   const proofImg = document.getElementById("proofImg");
-  const downloadEl = document.getElementById("download");
   const zipLink = document.getElementById("zipLink");
 
-  function status(msg) {
-    statusEl.textContent = msg;
-    statusEl.classList.remove("hidden");
+  let currentFiles = [];
+  let pollAbort = null;
+
+  // --- Drag/drop helpers ---
+  function setDragOver(isOver){
+    dropZone.classList.toggle("dragover", isOver);
   }
 
+  dropZone.addEventListener("click", () => svgInput.click());
+  dropZone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") svgInput.click();
+  });
+
+  dropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  });
+  dropZone.addEventListener("dragleave", () => setDragOver(false));
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    applyFiles(files);
+  });
+
   svgInput.addEventListener("change", () => {
-    const files = Array.from(svgInput.files || []);
-    const valid = (files.length === 1 || files.length === 4);
+    applyFiles(Array.from(svgInput.files || []));
+  });
+
+  function applyFiles(files){
+    // only keep .svg
+    const svgs = files.filter(f => (f.name || "").toLowerCase().endsWith(".svg"));
+    currentFiles = svgs;
+
+    // Keep the underlying input in sync for FormData consistency
+    // (We can't programmatically set input.files reliably across browsers,
+    // so we use currentFiles as the source of truth.)
+    renderFiles();
+    updateValidityUI();
+    resetOutputs();
+  }
+
+  function updateValidityUI(){
+    const n = currentFiles.length;
+    const valid = (n === 1 || n === 4);
+
     submitBtn.disabled = !valid;
+    clearBtn.disabled = (n === 0);
+
+    if (n === 0) {
+      validHint.textContent = "Select 1 or 4 SVGs";
+      validHint.classList.remove("ok","bad");
+      return;
+    }
+    if (valid) {
+      validHint.textContent = (n === 1) ? "1 SVG (replicated ×4)" : "4 SVGs (one per slot)";
+      validHint.classList.add("ok");
+      validHint.classList.remove("bad");
+    } else {
+      validHint.textContent = `You selected ${n}. Must be 1 or 4.`;
+      validHint.classList.add("bad");
+      validHint.classList.remove("ok");
+    }
+  }
+
+  function renderFiles(){
+    if (!currentFiles.length) {
+      fileList.style.display = "none";
+      fileList.innerHTML = "";
+      return;
+    }
+    fileList.style.display = "grid";
+    fileList.innerHTML = "";
+
+    const slots = 4;
+    const shown = (currentFiles.length === 1)
+      ? [currentFiles[0], currentFiles[0], currentFiles[0], currentFiles[0]]
+      : currentFiles.slice(0,4);
+
+    for (let i=0;i<slots;i++){
+      const f = shown[i];
+      const line = document.createElement("div");
+      line.className = "fileline";
+      line.innerHTML = `<div><strong>Slot ${i+1}:</strong> ${escapeHtml(f.name)}</div><span class="badge">${fmtBytes(f.size)}</span>`;
+      fileList.appendChild(line);
+    }
+  }
+
+  function resetOutputs(){
+    // Stop any ongoing polling/progress
+    if (pollAbort) pollAbort.abort();
+    pollAbort = null;
+
+    statusBox.style.display = "none";
+    progressFill.style.width = "0%";
+    proofWrap.style.display = "none";
+    proofImg.src = "";
+    zipLink.href = "#";
+  }
+
+  clearBtn.addEventListener("click", () => {
+    currentFiles = [];
+    svgInput.value = "";
+    renderFiles();
+    updateValidityUI();
+    resetOutputs();
   });
 
   submitBtn.addEventListener("click", async () => {
-    submitBtn.disabled = true;
-    status("Uploading…");
+    resetOutputs();
 
-    const files = Array.from(svgInput.files || []);
-    if (!(files.length === 1 || files.length === 4)) {
-      status("Please upload exactly 1 or 4 SVG files.");
-      submitBtn.disabled = false;
+    const n = currentFiles.length;
+    if (!(n === 1 || n === 4)) {
+      updateValidityUI();
       return;
     }
 
+    submitBtn.disabled = true;
+    clearBtn.disabled = true;
+
+    const controller = new AbortController();
+    pollAbort = controller;
+
     try {
+      setStatus("Uploading…", "Preparing job", 4);
+
       const fd = new FormData();
-      for (const f of files) fd.append("svgs", f, f.name);
+      for (const f of currentFiles) fd.append("svgs", f, f.name);
 
-      const createRes = await fetch("/api/job", { method: "POST", body: fd });
-      const createJson = await createRes.json();
+      const createRes = await fetch("/api/job", {
+        method: "POST",
+        body: fd,
+        signal: controller.signal
+      });
 
-      if (!createRes.ok) {
-        status(`Error: ${createJson.error || "job create failed"}`);
-        submitBtn.disabled = false;
-        return;
+      const ct = (createRes.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json")) {
+        const t = await createRes.text();
+        throw new Error(`API not responding (expected JSON from /api/job). First chars: ${t.slice(0,80).replace(/\s+/g," ")}`);
       }
+
+      const createJson = await createRes.json();
+      if (!createRes.ok) throw new Error(createJson.error || "job create failed");
 
       const jobId = createJson.jobId;
-      status(`Processing… (${jobId})`);
+      setStatus("Processing…", `Job ${jobId}`, 10);
 
+      // Start fake progress (estimate ~90s). Real completion is via polling.
+      const start = Date.now();
+      const estMs = 90_000;
+      const progressTimer = setInterval(() => {
+        const elapsed = Date.now() - start;
+        // Approach 95% by ~90s, then hover.
+        const p = Math.min(95, Math.floor((elapsed / estMs) * 95));
+        progressFill.style.width = p + "%";
+      }, 250);
+
+      // Poll
       while (true) {
-        await new Promise(r => setTimeout(r, 1200));
-        const res = await fetch(`/api/job/${jobId}`);
-        const j = await res.json();
+        await sleep(1200, controller.signal);
+        const r = await fetch(`/api/job/${jobId}`, { signal: controller.signal });
+        const j = await r.json();
 
         if (j.status === "done") {
-          status("Done");
+          clearInterval(progressTimer);
+          progressFill.style.width = "100%";
+          setStatus("Done", `Job ${jobId}`, 100);
+
           proofImg.src = j.proofUrl + `?t=${Date.now()}`;
           zipLink.href = j.zipUrl;
+          proofWrap.style.display = "block";
+          break;
+        }
 
-          proofEl.classList.remove("hidden");
-          downloadEl.classList.remove("hidden");
-          break;
-        }
         if (j.status === "error") {
-          status(`Error: ${j.error || "unknown"}`);
-          break;
+          clearInterval(progressTimer);
+          throw new Error(j.error || "unknown error");
         }
+
+        // keep status hint lively without changing backend
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        statusHint.textContent = `Working… (${elapsed}s). This usually takes around 90 seconds.`;
       }
+
     } catch (err) {
-      status(`Error: ${err && err.message ? err.message : String(err)}`);
+      setStatus("Error", (err && err.message) ? err.message : String(err), 0, true);
     } finally {
-      submitBtn.disabled = false;
+      submitBtn.disabled = (currentFiles.length !== 1 && currentFiles.length !== 4);
+      clearBtn.disabled = (currentFiles.length === 0);
     }
   });
+
+  function setStatus(main, meta, pct, isError=false){
+    statusBox.style.display = "block";
+    statusMsg.textContent = main;
+    statusMeta.textContent = meta || "";
+    statusHint.textContent = "";
+
+    if (isError){
+      statusMsg.classList.add("bad");
+    } else {
+      statusMsg.classList.remove("bad");
+    }
+
+    if (typeof pct === "number" && pct >= 0) {
+      progressFill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    }
+  }
+
+  function fmtBytes(n){
+    if (n < 1024) return `${n} B`;
+    const kb = n/1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb/1024;
+    return `${mb.toFixed(2)} MB`;
+  }
+
+  function escapeHtml(s){
+    return (s||"").replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[c]));
+  }
+
+  function sleep(ms, signal){
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, ms);
+      if (!signal) return;
+      signal.addEventListener("abort", () => {
+        clearTimeout(t);
+        reject(new Error("Cancelled"));
+      }, { once: true });
+    });
+  }
 </script>
 
 </body>
