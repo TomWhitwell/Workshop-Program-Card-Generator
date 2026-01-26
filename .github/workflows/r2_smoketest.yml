@@ -1,7 +1,7 @@
 name: R2 smoketest
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   test:
@@ -22,4 +22,3 @@ jobs:
           echo "hello $(date -u)" > hello.txt
           aws s3 cp hello.txt "s3://$R2_BUCKET/smoketest/hello.txt" --endpoint-url "$R2_ENDPOINT"
           aws s3 ls "s3://$R2_BUCKET/smoketest/" --endpoint-url "$R2_ENDPOINT"
-
