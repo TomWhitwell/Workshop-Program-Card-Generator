@@ -35,6 +35,8 @@
 - You can ignore the visualisation of part positions, it's normally wrong, this is a very simple board. 
 - Click NEXT 
 
+- Re: Conformal Coating. Cards from Thonk and RYK have a layer of Conformal Coating over the flash memory chip. I suggested this to make the cards more robust and resistant to electrical contact and fingers. I believe this is a 'nice to have' and not essential. You can request conformal coating at JLC but it may be expensive for small runs. It's very important to specify that it is only on the chip, not on the main body of the card that goes into the slot. Alternatively, I'd suggest (I haven't tested this) a small dab of nail varnish over the chip, being careful not to get any onto the part of the card that go into the slot. 
+
 - Now you'll be shown the price 
 - In January 2025 these were the prices shown, pre shipping, pre tariffs:
   - 2 assembled boards (green) = 8 individual cards was $62.88 + shipping + tariffs 
