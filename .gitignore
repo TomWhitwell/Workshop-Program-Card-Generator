@@ -1,19 +1,4 @@
-# -------------------------------------------------------------------
-# OS / editor cruft
-# -------------------------------------------------------------------
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon?
-._*
-.Spotlight-V100
-.Trashes
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-*.code-workspace
+
 
 # -------------------------------------------------------------------
 # Python / venv / tooling
@@ -93,10 +78,27 @@ temp/
 
 # BUT keep your committed shell/template gerbers
 !templates/**
-
+!collateral/**
 # -------------------------------------------------------------------
 # Misc
 # -------------------------------------------------------------------
 *.bak
 *.tmp
 *.orig
+
+# -------------------------------------------------------------------
+# OS / editor cruft
+# -------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace

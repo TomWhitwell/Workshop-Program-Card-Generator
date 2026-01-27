@@ -10,14 +10,14 @@
 - Upload gerbers.zip to the PCB quote page 
 - IMPORTANT: select 0.8mm pcb 
 - IMPORTANT: select ENIG 
-- You can select your colour 
+- You can select your colour (green is cheapest)
 - Both these options will make the PCB more expensive, but are essential 
-- You may be warned that some options, for example black, are rare and more expensive and take longer 
+- You will be warned that some options, for example black, are rare and more expensive and take longer 
+- Check these options carefully - if the thickness is not 0.8mm the cards will not work. 
 - You can leave all the other PCB options as default 
 
 - Flip the toggle further down for PCB Assembly 
 - IMPORTANT: Select 'Assemble bottom side' 
-- This will force you to select 'Standard' assembly 
 - All other options can be left as default 
 - Click NEXT 
 
@@ -37,8 +37,11 @@
 
 - Now you'll be shown the price 
 - In January 2025 these were the prices shown, pre shipping, pre tariffs:
-  - 2 assembled boards = 8 individual cards was $62.88 + shipping + tariffs 
-  - 5 assembled boards = 20 individual cards was $76.65 + shipping + tariffs 
+  - 2 assembled boards (green) = 8 individual cards was $62.88 + shipping + tariffs 
+  - 5 assembled boards (green) = 20 individual cards was $76.65 + shipping + tariffs 
+  - 15 assembled boards (black) = 60 individual cards was $142.63 + shipping + tariffs
+  
+  
   
   
 
