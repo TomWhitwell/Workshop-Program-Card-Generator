@@ -159,7 +159,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-from svgpathtools import svg2paths2  # type: ignore
+from svgpathtools import Document, CONVERT_ONLY_PATHS  # type: ignore
 from svgpathtools.path import Path as SvgPathT  # type: ignore
 
 
@@ -446,7 +446,10 @@ def build_one_svg_snippet(
     # Convert tolerance in mm to step in SVG user units (approx; using sx)
     tol_user = max(0.01, tolerance_mm / sx)
 
-    paths, _attrs, _svg_attrs = svg2paths2(str(svg_path))
+    # Flatten transforms from the SVG root and all parent groups before sampling.
+    # svg2paths2() returns raw path data and ignores ancestor transforms, which
+    # displaces artwork exported by tools such as Affinity Designer.
+    paths = Document(str(svg_path)).paths(path_conversions=CONVERT_ONLY_PATHS)
     if not paths:
         return ""
 
