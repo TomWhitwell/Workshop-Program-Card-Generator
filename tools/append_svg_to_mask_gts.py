@@ -7,7 +7,8 @@
 # solder mask layer (typically Front Mask: *.gts), writing a new *.gts output.
 #
 # This is designed for a low-user workflow where non-electrical artwork is
-# authored in Illustrator/Inkscape/InDesign, exported as SVG to fixed specs,
+# authored in Affinity/Illustrator/Inkscape or another vector editor, exported
+# as SVG to fixed specs,
 # then injected into an otherwise fixed Gerber “shell” set.
 #
 #
@@ -18,8 +19,10 @@
 #    - Coordinate precision from %FS..*%
 #
 # 2) We convert SVG geometry to Gerber REGION fills:
-#    - SVG paths are read via svgpathtools.
-#    - Each SVG <path> element may contain multiple “subpaths” (compound shapes).
+#    - SVG paths and basic shapes are read via svgpathtools.
+#    - Nested transforms and inherited inline presentation styles are resolved.
+#    - Invisible shapes are ignored and unsupported paint effects fail early.
+#    - Each shape may contain multiple “subpaths” (compound shapes).
 #    - We flatten curves into polygons by sampling along each segment.
 #    - We emit each polygon as a Gerber region (G36*/G37*).
 #
@@ -30,21 +33,16 @@
 #    - In Gerber, holes are commonly represented by switching layer polarity:
 #        %LPD*%  = DARK (add material)
 #        %LPC*%  = CLEAR (subtract material)
-#    - The tricky bit: different tools may choose different winding directions
-#      for outer/inner shapes, especially after Y-flips.
-#    - To make this robust, we do NOT assume “CCW = filled”.
-#      Instead, for each original SVG <path> element we:
-#        a) Compute signed area for each subpath polygon
-#        b) Pick the subpath with the largest absolute area as the “outer”
-#        c) Whatever winding sign that “outer” uses becomes DARK for that <path>
-#        d) Any subpath with the opposite sign becomes CLEAR (a hole)
+#    - Contours are classified by nesting depth and the effective SVG fill-rule.
+#    - “evenodd” alternates dark/clear by nesting depth.
+#    - “nonzero” uses accumulated winding to determine dark/clear transitions.
 #
 # 4) Coordinate mapping:
 #    - SVG uses a Y-down coordinate system; KiCad/Gerber viewers commonly use
 #      Y-up world coordinates.
 #    - We map SVG -> “local mm” using:
 #        - viewBox origin as the reference (origin mode: viewBox)
-#        - scale derived from SVG physical size (width/height) vs viewBox size
+#        - scale/alignment from viewBox, physical size and preserveAspectRatio
 #        - a Y-flip to make local Y positive upwards
 #    - Placement coordinates are provided in mm in the same coordinate space you
 #      see in KiCad/GerbView (e.g. “67.5,31.0”).
@@ -78,6 +76,9 @@
 #       Fallback physical size in mm if an SVG lacks width/height attributes.
 #       If your SVGs already have width/height (e.g. “19mm”/“11mm”), you can
 #       omit this.
+#   --expected-svg-size-mm W,H
+#       Reject resolved SVG sizes other than W,H. The card workflow uses this
+#       to prevent valid but incorrectly sized artwork crossing card boundaries.
 #
 # Example:
 #   python ./append_svg_to_mask_gts.py \
@@ -105,14 +106,18 @@
 #    - width="19mm" height="11mm" is ideal.
 #    - If missing, provide --default-svg-size-mm W,H on the command line.
 #
-# 3) Artwork should be “filled shapes”, not strokes where possible.
-#    - Strokes can be converted to outlines in the design tool if needed.
-#    - This script treats paths as filled regions.
+# 3) Artwork must be filled vector shapes. Paths, rectangles, circles, ellipses,
+#    polygons and filled polylines are supported.
+#    - Visible strokes are rejected; convert them to outlined filled shapes.
 #
-# 4) Fonts should be outlined/converted to paths in the design tool.
-#    - Do not rely on runtime font availability.
+# 4) Fonts must be outlined/converted to paths in the design tool.
 #
-# 5) No electrical relevance:
+# 5) CSS stylesheets, <use>, nested <svg>, clipping, masks, filters, raster
+#    images and foreign content are rejected because they cannot be translated
+#    faithfully by this deterministic Gerber converter. Inline presentation
+#    attributes/styles and nested SVG transform attributes are supported.
+#
+# 6) No electrical relevance:
 #    - This is intended for solder mask art. It does not check clearances,
 #      min feature sizes, polarity rules, or manufacturability.
 #    - You are responsible for the SVG creation rules and any DFM constraints.
@@ -120,14 +125,13 @@
 #
 # TROUBLESHOOTING
 # ---------------
-# - “Letters collapse into a blob / overlapping block”
-#     That happens if you rebase each path to its own bbox. This script uses
-#     the SVG viewBox origin to preserve absolute positions.
+# - “Artwork is displaced or huge”
+#     Parent transforms must be applied before viewBox scaling. The parser does
+#     this and rejects any resulting geometry that escapes the SVG canvas.
 #
 # - “Holes in 0/A/R are wrong”
-#     This is handled by the “largest absolute area is outer contour” rule per
-#     SVG <path>. If you still see issues, check that your exporter produces
-#     compound paths (outer + inner) rather than separate independent fills.
+#     The effective evenodd/nonzero fill-rule is honored for compound paths. If
+#     holes are separate overlapping objects, combine them before export.
 #
 # - “Scale is wrong”
 #     Check SVG width/height and viewBox are consistent. If width/height are
@@ -157,10 +161,22 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
-from svgpathtools import Document, CONVERT_ONLY_PATHS  # type: ignore
+from svgpathtools import CONVERSIONS, Document  # type: ignore
 from svgpathtools.path import Path as SvgPathT  # type: ignore
+
+
+SVG_NS = "http://www.w3.org/2000/svg"
+SUPPORTED_SHAPE_TAGS = ("path", "rect", "circle", "ellipse", "polygon", "polyline", "line")
+SUPPORTED_CONVERSIONS = {name: CONVERSIONS[name] for name in SUPPORTED_SHAPE_TAGS}
+NON_RENDERING_CONTAINERS = {"defs", "clipPath", "mask", "marker", "pattern", "symbol"}
+UNSUPPORTED_RENDERED_TAGS = {
+    "text": "convert text to paths/outlines",
+    "image": "embed raster images as vector paths",
+    "use": "expand cloned <use> content to ordinary paths",
+    "foreignObject": "convert foreign content to paths",
+}
 
 
 # ----------------------------
@@ -231,14 +247,14 @@ def parse_svg_length_to_mm(value: str) -> Optional[float]:
     if not value:
         return None
     s = value.strip()
-    m = re.match(r"^([+-]?\d+(?:\.\d+)?)([a-zA-Z%]*)$", s)
+    m = re.match(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)([a-zA-Z%]*)$", s)
     if not m:
         return None
     num = float(m.group(1))
     unit = (m.group(2) or "").lower()
 
-    # SVG/CSS absolute units; assume 96 dpi for px
-    if unit in ("mm", ""):
+    # SVG/CSS absolute units; unitless outer dimensions are CSS px.
+    if unit == "mm":
         return num
     if unit == "cm":
         return num * 10.0
@@ -248,7 +264,7 @@ def parse_svg_length_to_mm(value: str) -> Optional[float]:
         return num * (25.4 / 72.0)
     if unit == "pc":  # 6 pc per inch
         return num * (25.4 / 6.0)
-    if unit == "px":  # 96 px per inch
+    if unit in ("px", ""):  # 96 CSS px per inch
         return num * (25.4 / 96.0)
 
     return None
@@ -264,9 +280,14 @@ def read_svg_viewbox(svg_path: Path) -> Tuple[float, float, float, float]:
     vb = root.attrib.get("viewBox") or root.attrib.get("viewbox")
     if not vb:
         raise ValueError(f"{svg_path}: missing viewBox (required for reliable scaling)")
-    parts = [float(x) for x in re.split(r"[,\s]+", vb.strip()) if x]
-    if len(parts) != 4:
+    try:
+        parts = [float(x) for x in re.split(r"[,\s]+", vb.strip()) if x]
+    except ValueError as exc:
+        raise ValueError(f"{svg_path}: malformed viewBox='{vb}'") from exc
+    if len(parts) != 4 or not all(math.isfinite(x) for x in parts):
         raise ValueError(f"{svg_path}: malformed viewBox='{vb}'")
+    if parts[2] <= 0 or parts[3] <= 0:
+        raise ValueError(f"{svg_path}: viewBox width/height must be positive, got '{vb}'")
     return parts[0], parts[1], parts[2], parts[3]
 
 
@@ -274,10 +295,14 @@ def read_svg_physical_size_mm(svg_path: Path, fallback: Optional[Tuple[float, fl
     root = read_svg_root(svg_path)
     w_mm = parse_svg_length_to_mm(root.attrib.get("width", ""))
     h_mm = parse_svg_length_to_mm(root.attrib.get("height", ""))
-    if w_mm is not None and h_mm is not None:
+    if w_mm is not None and h_mm is not None and all(
+        math.isfinite(x) and x > 0 for x in (w_mm, h_mm)
+    ):
         return float(w_mm), float(h_mm)
 
     if fallback is not None:
+        if not all(math.isfinite(x) and x > 0 for x in fallback):
+            raise ValueError(f"Fallback SVG size must be positive finite millimetres, got {fallback}")
         return fallback
 
     raise ValueError(
@@ -286,15 +311,233 @@ def read_svg_physical_size_mm(svg_path: Path, fallback: Optional[Tuple[float, fl
     )
 
 
-def compute_user_to_mm_scale(
+@dataclass(frozen=True)
+class ViewBoxMapping:
+    sx: float
+    sy: float
+    offset_x_mm: float
+    offset_y_mm: float
+
+
+def compute_viewbox_mapping(
     viewbox: Tuple[float, float, float, float],
     physical_mm: Tuple[float, float],
-) -> Tuple[float, float]:
+    preserve_aspect_ratio: str,
+) -> ViewBoxMapping:
     _minx, _miny, vb_w, vb_h = viewbox
-    if vb_w == 0 or vb_h == 0:
-        raise ValueError("SVG viewBox has zero size")
     w_mm, h_mm = physical_mm
-    return w_mm / vb_w, h_mm / vb_h
+    raw_sx, raw_sy = w_mm / vb_w, h_mm / vb_h
+
+    tokens = (preserve_aspect_ratio or "xMidYMid meet").strip().split()
+    if tokens and tokens[0] == "defer":
+        tokens = tokens[1:]
+    align = tokens[0] if tokens else "xMidYMid"
+    meet_or_slice = tokens[1] if len(tokens) > 1 else "meet"
+    if len(tokens) > 2 or meet_or_slice not in ("meet", "slice"):
+        raise ValueError(f"Unsupported preserveAspectRatio='{preserve_aspect_ratio}'")
+    if align == "none":
+        return ViewBoxMapping(raw_sx, raw_sy, 0.0, 0.0)
+    if not re.fullmatch(r"x(?:Min|Mid|Max)Y(?:Min|Mid|Max)", align):
+        raise ValueError(f"Unsupported preserveAspectRatio='{preserve_aspect_ratio}'")
+
+    scale = min(raw_sx, raw_sy) if meet_or_slice == "meet" else max(raw_sx, raw_sy)
+    extra_x = w_mm - vb_w * scale
+    extra_y = h_mm - vb_h * scale
+    x_align = align[1:4]
+    y_align = align[5:8]
+    x_factor = {"Min": 0.0, "Mid": 0.5, "Max": 1.0}[x_align]
+    y_factor = {"Min": 0.0, "Mid": 0.5, "Max": 1.0}[y_align]
+    return ViewBoxMapping(scale, scale, extra_x * x_factor, extra_y * y_factor)
+
+
+@dataclass(frozen=True)
+class SvgShape:
+    path: SvgPathT
+    fill_rule: str
+    label: str
+
+
+def svg_local_name(element: ET.Element) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def parse_inline_style(value: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for declaration in (value or "").split(";"):
+        if not declaration.strip():
+            continue
+        if ":" not in declaration:
+            raise ValueError(f"Malformed inline SVG style declaration '{declaration.strip()}'")
+        name, raw_value = declaration.split(":", 1)
+        result[name.strip().lower()] = raw_value.strip()
+    return result
+
+
+def element_property(element: ET.Element, name: str) -> Optional[str]:
+    # Inline CSS has precedence over presentation attributes on the same element.
+    styles = parse_inline_style(element.attrib.get("style", ""))
+    if name in styles:
+        return styles[name]
+    value = element.attrib.get(name)
+    return value.strip() if value is not None else None
+
+
+def parse_svg_opacity(value: Optional[str], default: float = 1.0) -> float:
+    if value is None or value.strip().lower() == "inherit":
+        return default
+    s = value.strip()
+    try:
+        number = float(s[:-1]) / 100.0 if s.endswith("%") else float(s)
+    except ValueError as exc:
+        raise ValueError(f"Unsupported SVG opacity value '{value}'") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"Unsupported SVG opacity value '{value}'")
+    return min(1.0, max(0.0, number))
+
+
+def element_chain(
+    element: ET.Element,
+    parent_map: Dict[ET.Element, ET.Element],
+) -> List[ET.Element]:
+    chain = [element]
+    while chain[-1] in parent_map:
+        chain.append(parent_map[chain[-1]])
+    chain.reverse()
+    return chain
+
+
+def shape_paint_state(
+    element: ET.Element,
+    parent_map: Dict[ET.Element, ET.Element],
+) -> Tuple[bool, str, bool]:
+    """Return (filled_and_visible, fill_rule, visible_stroke)."""
+    fill = "black"
+    stroke = "none"
+    fill_opacity = 1.0
+    stroke_opacity = 1.0
+    stroke_width = "1"
+    visibility = "visible"
+    fill_rule = "nonzero"
+    opacity_product = 1.0
+
+    chain = element_chain(element, parent_map)
+    if any(svg_local_name(node) in NON_RENDERING_CONTAINERS for node in chain[:-1]):
+        return False, fill_rule, False
+
+    for node in chain:
+        if (element_property(node, "display") or "").strip().lower() == "none":
+            return False, fill_rule, False
+        if element_property(node, "transform") is not None and "transform" in parse_inline_style(
+            node.attrib.get("style", "")
+        ):
+            raise ValueError("CSS transform properties are unsupported; use the SVG transform attribute")
+        opacity_product *= parse_svg_opacity(element_property(node, "opacity"), 1.0)
+
+        for prop_name, current in (
+            ("fill", fill),
+            ("stroke", stroke),
+            ("stroke-width", stroke_width),
+            ("visibility", visibility),
+            ("fill-rule", fill_rule),
+        ):
+            specified = element_property(node, prop_name)
+            if specified is not None and specified.strip().lower() not in ("inherit", "unset"):
+                if prop_name == "fill":
+                    fill = specified
+                elif prop_name == "stroke":
+                    stroke = specified
+                elif prop_name == "stroke-width":
+                    stroke_width = specified
+                elif prop_name == "visibility":
+                    visibility = specified
+                else:
+                    fill_rule = specified
+
+        specified_fill_opacity = element_property(node, "fill-opacity")
+        if specified_fill_opacity is not None and specified_fill_opacity.strip().lower() not in ("inherit", "unset"):
+            fill_opacity = parse_svg_opacity(specified_fill_opacity)
+        specified_stroke_opacity = element_property(node, "stroke-opacity")
+        if specified_stroke_opacity is not None and specified_stroke_opacity.strip().lower() not in ("inherit", "unset"):
+            stroke_opacity = parse_svg_opacity(specified_stroke_opacity)
+
+        for effect in ("clip-path", "mask", "filter"):
+            effect_value = element_property(node, effect)
+            if effect_value and effect_value.strip().lower() != "none":
+                raise ValueError(
+                    f"SVG {effect} effects cannot be represented reliably; expand/flatten the artwork first"
+                )
+
+    if visibility.strip().lower() in ("hidden", "collapse") or opacity_product <= 0:
+        return False, fill_rule, False
+
+    fill_value = fill.strip().lower()
+    filled = fill_value not in ("none", "transparent") and fill_opacity > 0
+    stroke_value = stroke.strip().lower()
+    try:
+        width_number = float(re.match(
+            r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+            stroke_width.strip(),
+        ).group(0))
+    except (AttributeError, ValueError):
+        width_number = 1.0
+    visible_stroke = stroke_value not in ("none", "transparent") and stroke_opacity > 0 and width_number != 0
+
+    normalized_rule = fill_rule.strip().lower()
+    if normalized_rule not in ("nonzero", "evenodd"):
+        raise ValueError(f"Unsupported SVG fill-rule '{fill_rule}'")
+    return filled, normalized_rule, visible_stroke
+
+
+def load_svg_shapes(svg_path: Path) -> Tuple[ET.Element, List[SvgShape]]:
+    raw_text = svg_path.read_text(encoding="utf-8", errors="replace")
+    if re.search(r"<\?xml-stylesheet\b", raw_text, re.IGNORECASE):
+        raise ValueError(f"{svg_path}: external XML stylesheets are unsupported; inline the artwork styles")
+
+    document = Document(str(svg_path))
+    root = document.root
+    parent_map = {child: parent for parent in root.iter() for child in parent}
+    svg_elements = [element for element in root.iter() if element.tag.startswith("{" + SVG_NS + "}")]
+
+    if any(svg_local_name(element) == "style" for element in svg_elements):
+        raise ValueError(f"{svg_path}: embedded CSS stylesheets are unsupported; use inline SVG styles")
+    if sum(svg_local_name(element) == "svg" for element in svg_elements) > 1:
+        raise ValueError(f"{svg_path}: nested <svg> viewports are unsupported; flatten the artwork first")
+
+    for element in svg_elements:
+        tag = svg_local_name(element)
+        if tag in UNSUPPORTED_RENDERED_TAGS:
+            filled, _rule, stroke = shape_paint_state(element, parent_map)
+            if filled or stroke or tag in ("use", "image", "foreignObject"):
+                raise ValueError(f"{svg_path}: <{tag}> is unsupported; {UNSUPPORTED_RENDERED_TAGS[tag]}")
+
+    included: Dict[int, Tuple[str, str]] = {}
+    for element in svg_elements:
+        tag = svg_local_name(element)
+        if tag not in SUPPORTED_SHAPE_TAGS:
+            continue
+        filled, fill_rule, visible_stroke = shape_paint_state(element, parent_map)
+        label = f"<{tag} id='{element.attrib.get('id', '')}'>"
+        if visible_stroke:
+            raise ValueError(
+                f"{svg_path}: {label} has a visible stroke; convert strokes to outlined filled paths"
+            )
+        # SVG line elements have no fillable interior; an actual line is a stroke.
+        if filled and tag != "line":
+            included[id(element)] = (fill_rule, label)
+
+    paths = document.paths(
+        path_filter=lambda element: id(element) in included,
+        path_conversions=SUPPORTED_CONVERSIONS,
+    )
+    shapes: List[SvgShape] = []
+    for path in paths:
+        element = getattr(path, "element", None)
+        metadata = included.get(id(element))
+        if metadata is not None:
+            shapes.append(SvgShape(path=path, fill_rule=metadata[0], label=metadata[1]))
+    if not shapes:
+        raise ValueError(f"{svg_path}: no visible filled vector shapes were found")
+    return root, shapes
 
 
 # ----------------------------
@@ -359,7 +602,7 @@ def rotate_points_mm(
 def map_user_points_to_local_mm(
     pts_user: List[Tuple[float, float]],
     viewbox: Tuple[float, float, float, float],
-    scale_xy: Tuple[float, float],
+    mapping: ViewBoxMapping,
     # fixed “working” behaviour:
     flip_svg_y: bool = True,
     svg_anchor_top_left: bool = True,
@@ -374,14 +617,12 @@ def map_user_points_to_local_mm(
     With svg_anchor_top_left=True, the SVG top-left is (0,0) and y goes negative downward.
     """
     vb_minx, vb_miny, _vb_w, _vb_h = viewbox
-    sx, sy = scale_xy
-
     out: List[Tuple[float, float]] = []
     for x_u, y_u in pts_user:
         x0_u = x_u - vb_minx
         y0_u = y_u - vb_miny
-        x_mm = x0_u * sx
-        y_mm = y0_u * sy
+        x_mm = x0_u * mapping.sx + mapping.offset_x_mm
+        y_mm = y0_u * mapping.sy + mapping.offset_y_mm
 
         if flip_svg_y:
             if svg_anchor_top_left:
@@ -392,6 +633,91 @@ def map_user_points_to_local_mm(
 
         out.append((x_mm, y_mm))
     return out
+
+
+def point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
+    """Even/odd point containment for non-self-intersecting sampled contours."""
+    x, y = point
+    inside = False
+    if len(polygon) < 3:
+        return False
+    previous = polygon[-1]
+    for current in polygon:
+        x1, y1 = previous
+        x2, y2 = current
+        if (y1 > y) != (y2 > y):
+            x_cross = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < x_cross:
+                inside = not inside
+        previous = current
+    return inside
+
+
+def classify_contour_polarities(
+    polygons: List[List[Tuple[float, float]]],
+    areas: List[float],
+    fill_rule: str,
+) -> List[Tuple[int, int, str]]:
+    """Return (nesting depth, contour index, dark|clear) in safe emission order."""
+    parents: List[Optional[int]] = [None] * len(polygons)
+    for index, polygon in enumerate(polygons):
+        candidates = [
+            other
+            for other, other_polygon in enumerate(polygons)
+            if other != index
+            and abs(areas[other]) > abs(areas[index])
+            and point_in_polygon(polygon[0], other_polygon)
+        ]
+        if candidates:
+            parents[index] = min(candidates, key=lambda candidate: abs(areas[candidate]))
+
+    depths: List[int] = [0] * len(polygons)
+    for index in range(len(polygons)):
+        seen = set()
+        parent = parents[index]
+        while parent is not None:
+            if parent in seen:
+                raise ValueError("SVG contour nesting cycle detected")
+            seen.add(parent)
+            depths[index] += 1
+            parent = parents[parent]
+
+    polarities: Dict[int, str] = {}
+    for index, area in enumerate(areas):
+        if fill_rule == "evenodd":
+            polarity = "dark" if depths[index] % 2 == 0 else "clear"
+        else:
+            ancestor_winding = 0
+            parent = parents[index]
+            while parent is not None:
+                ancestor_winding += 1 if areas[parent] >= 0 else -1
+                parent = parents[parent]
+            inside_winding = ancestor_winding + (1 if area >= 0 else -1)
+            outside_filled = ancestor_winding != 0
+            inside_filled = inside_winding != 0
+            if outside_filled == inside_filled:
+                continue
+            polarity = "dark" if inside_filled else "clear"
+        polarities[index] = polarity
+
+    # Emit each parent immediately followed by its descendants. Some Gerber
+    # consumers composite clear polarity sequentially, so grouping every dark
+    # contour before every hole can produce an incorrect layer even when the
+    # final set-theoretic geometry looks equivalent.
+    children: Dict[Optional[int], List[int]] = {}
+    for index, parent in enumerate(parents):
+        children.setdefault(parent, []).append(index)
+    classified: List[Tuple[int, int, str]] = []
+
+    def append_subtree(index: int) -> None:
+        if index in polarities:
+            classified.append((depths[index], index, polarities[index]))
+        for child in children.get(index, []):
+            append_subtree(child)
+
+    for root_index in children.get(None, []):
+        append_subtree(root_index)
+    return classified
 
 
 # ----------------------------
@@ -431,27 +757,37 @@ def build_one_svg_snippet(
     place_mm: Tuple[float, float],
     rotate_deg_ccw: float,
     default_svg_size_mm: Optional[Tuple[float, float]],
+    expected_svg_size_mm: Optional[Tuple[float, float]] = None,
     tolerance_mm: float = 0.05,
     invert_board_y: bool = True,
 ) -> str:
     """
     Convert one SVG into Gerber region statements at a single placement.
-    - Holes/counters handled with: outer contour = largest |area| for each original <path>.
+    - Parent transforms, visibility, basic shapes and fill rules are resolved first.
+    - Artwork outside the SVG viewport is rejected rather than silently misplaced.
     - Rotation is about the centre of the SVG physical size.
     """
     viewbox = read_svg_viewbox(svg_path)
     physical_mm = read_svg_physical_size_mm(svg_path, fallback=default_svg_size_mm)
-    sx, sy = compute_user_to_mm_scale(viewbox, physical_mm)
+    if expected_svg_size_mm is not None and any(
+        abs(actual - expected) > 0.01
+        for actual, expected in zip(physical_mm, expected_svg_size_mm)
+    ):
+        raise ValueError(
+            f"{svg_path}: physical size is {physical_mm[0]:g}x{physical_mm[1]:g}mm; "
+            f"this job requires {expected_svg_size_mm[0]:g}x{expected_svg_size_mm[1]:g}mm"
+        )
+    root, shapes = load_svg_shapes(svg_path)
+    mapping = compute_viewbox_mapping(
+        viewbox,
+        physical_mm,
+        root.attrib.get("preserveAspectRatio", "xMidYMid meet"),
+    )
 
     # Convert tolerance in mm to step in SVG user units (approx; using sx)
-    tol_user = max(0.01, tolerance_mm / sx)
-
-    # Flatten transforms from the SVG root and all parent groups before sampling.
-    # svg2paths2() returns raw path data and ignores ancestor transforms, which
-    # displaces artwork exported by tools such as Affinity Designer.
-    paths = Document(str(svg_path)).paths(path_conversions=CONVERT_ONLY_PATHS)
-    if not paths:
-        return ""
+    tol_user = max(0.01, tolerance_mm / min(mapping.sx, mapping.sy))
+    overflow_user = max(1e-7, 0.01 / min(mapping.sx, mapping.sy))
+    vb_minx, vb_miny, vb_w, vb_h = viewbox
 
     # Local centre in our "top-left anchored, y-up" coordinates:
     w_mm, h_mm = physical_mm
@@ -464,8 +800,24 @@ def build_one_svg_snippet(
     place = (px, py)
 
     out: List[str] = []
-    for p in paths:
-        subpaths = p.continuous_subpaths()
+    emitted_regions = 0
+    for shape in shapes:
+        try:
+            xmin, xmax, ymin, ymax = shape.path.bbox()
+        except Exception as exc:
+            raise ValueError(f"{svg_path}: could not calculate bounds for {shape.label}") from exc
+        if (
+            xmin < vb_minx - overflow_user
+            or xmax > vb_minx + vb_w + overflow_user
+            or ymin < vb_miny - overflow_user
+            or ymax > vb_miny + vb_h + overflow_user
+        ):
+            raise ValueError(
+                f"{svg_path}: {shape.label} extends outside viewBox {viewbox}; "
+                f"shape bounds are ({xmin:.3f}, {ymin:.3f})..({xmax:.3f}, {ymax:.3f})"
+            )
+
+        subpaths = shape.path.continuous_subpaths()
         polys_local_mm: List[List[Tuple[float, float]]] = []
         areas: List[float] = []
 
@@ -477,35 +829,45 @@ def build_one_svg_snippet(
             poly_mm = map_user_points_to_local_mm(
                 pts_user,
                 viewbox=viewbox,
-                scale_xy=(sx, sy),
+                mapping=mapping,
                 flip_svg_y=True,
                 svg_anchor_top_left=True,
             )
+
+            if any(
+                x < -0.01 or x > w_mm + 0.01 or y > 0.01 or y < -h_mm - 0.01
+                for x, y in poly_mm
+            ):
+                raise ValueError(
+                    f"{svg_path}: preserveAspectRatio maps {shape.label} outside the physical "
+                    f"{w_mm:g}x{h_mm:g}mm canvas; flatten or crop the SVG first"
+                )
 
             # rotate around SVG centre (in local mm coords)
             poly_mm = rotate_points_mm(poly_mm, deg_ccw=rotate_deg_ccw, center=center_local)
 
             a = poly_area_signed(poly_mm)
+            if abs(a) < 1e-12:
+                continue
             polys_local_mm.append(poly_mm)
             areas.append(a)
 
         if not polys_local_mm:
             continue
 
-        # OUTER winding sign: choose the contour with largest absolute area
-        outer_idx = max(range(len(areas)), key=lambda i: abs(areas[i]))
-        dark_sign = +1 if areas[outer_idx] >= 0 else -1
-
-        for poly_mm, a in zip(polys_local_mm, areas):
-            s = +1 if a >= 0 else -1
-            if s == dark_sign:
-                out.append("%LPD*%")
-            else:
-                out.append("%LPC*%")
-            out.append(region_from_polygon_mm(fmt, poly_mm, place))
+        for _depth, contour_index, polarity in classify_contour_polarities(
+            polys_local_mm,
+            areas,
+            shape.fill_rule,
+        ):
+            out.append("%LPD*%" if polarity == "dark" else "%LPC*%")
+            out.append(region_from_polygon_mm(fmt, polys_local_mm[contour_index], place))
+            emitted_regions += 1
 
         out.append("%LPD*%")  # restore
 
+    if emitted_regions == 0:
+        raise ValueError(f"{svg_path}: visible vector shapes contain no filled closed regions")
     return "".join(out)
 
 
@@ -513,6 +875,7 @@ def build_all_snippet(
     fmt: GerberFormat,
     items: List[Tuple[Path, Tuple[float, float], float]],
     default_svg_size_mm: Optional[Tuple[float, float]],
+    expected_svg_size_mm: Optional[Tuple[float, float]] = None,
 ) -> str:
     # tiny aperture to keep some viewers/tools happy even if only regions are used
     ap_mm = 0.10
@@ -534,6 +897,7 @@ def build_all_snippet(
             place_mm=place,
             rotate_deg_ccw=rot,
             default_svg_size_mm=default_svg_size_mm,
+            expected_svg_size_mm=expected_svg_size_mm,
             tolerance_mm=0.05,
             invert_board_y=True,
         ))
@@ -570,6 +934,8 @@ def main() -> int:
     ap.add_argument("--out-gts", required=True, type=Path, help="Output Gerber filename")
     ap.add_argument("--default-svg-size-mm", type=parse_size_mm, default=None,
                     help="Fallback SVG physical size (W,H) if an SVG lacks width/height. Optional.")
+    ap.add_argument("--expected-svg-size-mm", type=parse_size_mm, default=None,
+                    help="Reject SVGs whose resolved physical size is not W,H millimetres. Optional.")
 
     ap.add_argument("--svg", action="append", default=[], type=Path,
                     help="SVG file to place. Repeatable; must match count of --place and --rotate.")
@@ -596,7 +962,12 @@ def main() -> int:
             raise SystemExit(f"SVG not found: {svg_path}")
         items.append((svg_path, place, rot))
 
-    snippet = build_all_snippet(fmt, items, default_svg_size_mm=args.default_svg_size_mm)
+    snippet = build_all_snippet(
+        fmt,
+        items,
+        default_svg_size_mm=args.default_svg_size_mm,
+        expected_svg_size_mm=args.expected_svg_size_mm,
+    )
 
     insert_at = find_m02_insert_index(base_text)
     out_text = base_text[:insert_at] + "\n" + snippet + "\n" + base_text[insert_at:]

@@ -203,13 +203,17 @@ Jobs are fully isolated and safe to run concurrently.
 
 SVGs **must**:
 
-* Declare physical size in mm (e.g. `width="19mm" height="11mm"`)
-* Use paths only (no text objects)
-* Use filled shapes (no strokes)
-* Have correct winding for holes
+* Have a valid `viewBox`
+* Declare a physical size or use the workflow's fixed 19 × 11 mm fallback
+* Use visible filled vector shapes (paths and SVG basic shapes are supported)
+* Convert text and strokes to outlined filled shapes
 * Assume usage as **solder-mask openings only**
 
-The system intentionally performs **no SVG validation** beyond file count.
+The converter applies nested transforms, inherited inline visibility/paint
+properties, `preserveAspectRatio`, and `evenodd`/`nonzero` fill rules. It rejects
+geometry outside the SVG canvas and SVG features that cannot be translated
+faithfully instead of silently generating misplaced artwork. The production
+workflow also requires the resolved physical size to be exactly 19 × 11 mm.
 
 ---
 
@@ -219,10 +223,12 @@ The system intentionally performs **no SVG validation** beyond file count.
 
 Responsibilities:
 
-* Parse SVG paths correctly
-* Respect `viewBox` and mm scaling
+* Parse SVG paths and basic shapes correctly
+* Respect nested transforms, `viewBox`, physical units and aspect-ratio mapping
+* Ignore non-rendered geometry (`display:none`, hidden visibility, zero opacity)
 * Handle SVG ↔ Gerber Y-axis inversion
-* Preserve hole geometry and nested paths
+* Preserve compound-path holes using the effective SVG fill rule
+* Reject artwork that escapes the SVG canvas
 * Convert paths to Gerber regions
 * Append regions into an existing `.gts` file
 * Support:
@@ -236,10 +242,12 @@ Explicitly **not supported**:
 * Fonts or text rendering
 * Boolean path operations
 * Stroke expansion
-* Error recovery
-* Heuristic fixes
+* CSS stylesheets or CSS transforms
+* `<use>`, nested SVG viewports, clipping, masks or filters
+* Raster images or foreign content
 
-SVGs must be prepared correctly upstream.
+Unsupported features fail with an actionable error so malformed output is not
+mistaken for a successful build.
 
 ---
 

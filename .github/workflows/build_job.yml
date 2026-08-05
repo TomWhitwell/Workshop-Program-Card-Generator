@@ -30,6 +30,9 @@ jobs:
           python3 -m pip install --user svgpathtools
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
+      - name: Run SVG converter regression tests
+        run: python3 -m unittest discover -s tests -v
+
       - name: Install AWS CLI (via pip)
         run: |
           python3 -m pip install --user --upgrade awscli
@@ -69,6 +72,7 @@ jobs:
             --base-gts "work/gerbers/4-up-blank-F_Mask.gts" \
             --out-gts  "work/gerbers/4-up-blank-F_Mask.gts" \
             --default-svg-size-mm 19,11 \
+            --expected-svg-size-mm 19,11 \
             --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
             --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
             --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
