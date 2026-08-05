@@ -68,6 +68,7 @@ jobs:
           python3 tools/append_svg_to_mask_gts.py \
             --base-gts "work/gerbers/4-up-blank-F_Mask.gts" \
             --out-gts  "work/gerbers/4-up-blank-F_Mask.gts" \
+            --default-svg-size-mm 19,11 \
             --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
             --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
             --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
@@ -152,3 +153,14 @@ jobs:
             -H "x-runner-secret: $RUNNER_SECRET" \
             --data '{"status":"done"}'
 
+      - name: Notify Pages that job failed
+        if: ${{ failure() }}
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          RUNNER_SECRET: ${{ secrets.RUNNER_SHARED_SECRET }}
+          SITE_BASE: https://pcg.musicthing.co.uk
+        run: |
+          curl -sS -X POST "$SITE_BASE/api/job/$JOB_ID/update" \
+            -H "content-type: application/json" \
+            -H "x-runner-secret: $RUNNER_SECRET" \
+            --data '{"status":"error","error":"The PCB build failed. Please check the GitHub Actions run for details."}'
