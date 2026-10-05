@@ -29,6 +29,7 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
     createdAt: body.createdAt || new Date().toISOString(),
     finishedAt: new Date().toISOString(),
     error: body.error || null,
+    detailsUrl: typeof body.detailsUrl === "string" ? body.detailsUrl : null,
   };
 
   await ctx.env.JOBS_KV.put(`job:${id}`, JSON.stringify(record), {

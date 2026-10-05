@@ -188,7 +188,7 @@
       display:flex;
       justify-content: space-between;
       gap: 10px;
-      align-items: baseline;
+      align-items: flex-start;
     }
 
     .status .msg{
@@ -198,10 +198,12 @@
       margin: 0;
     }
     .status .meta{
-      font-size: 12px;
+      font-size: 13px;
       color: var(--muted);
       margin: 0;
-      white-space: nowrap;
+      max-width: 62ch;
+      white-space: normal;
+      text-align: right;
     }
 
     .bar{
@@ -227,6 +229,11 @@
 
     .ok{ color: var(--ok); }
     .bad{ color: var(--bad); }
+
+    @media (max-width: 620px){
+      .status .top{ flex-direction: column; }
+      .status .meta{ text-align: left; }
+    }
 
     .proof{
       margin-top: 14px;
@@ -272,8 +279,10 @@
           <strong>SVG specifications</strong>
           <ul>
             <li>Either upload <strong>1</strong> SVG (used in all 4 positions) or <strong>4</strong> SVGs (one per slot)</li>
-            <li>Download <a href="/collateral/program-card-design-kit.zip">design templates and instructions for Illustrator and Inkscape here</a>.</li>
-            <li>Very complex designs (like Reverb+ ) may struggle with this process, carefully check your Gerbers in a gerber viewer if you're concerned.</li>
+            <li><a href="/collateral/program-card-design-kit.zip"><strong>Download the design kit (ZIP)</strong></a> for Illustrator and Inkscape starter files, artwork preparation instructions, and a guide to checking and using the generated Gerber files to order your cards.</li>
+            <li>Use a <strong>19 × 11 mm</strong> SVG page. You can use the starter files or create your own artwork. Any layer names are fine; all visible artwork is included. Hide or delete reference outlines and guide layers before saving.</li>
+            <li>Filled paths and standard vector shapes are supported. Convert live text and strokes to paths before uploading.</li>
+            <li>Artwork beyond the page edge is clipped. Always check the proof and generated Gerber files before manufacturing.</li>
           </ul>
         </div>
 
@@ -336,6 +345,8 @@
   const zipLink = document.getElementById("zipLink");
 
   let currentFiles = [];
+  let fileChecks = [];
+  let fileCheckGeneration = 0;
   let pollAbort = null;
 
   // --- Drag/drop helpers ---
@@ -368,18 +379,36 @@
     // only keep .svg
     const svgs = files.filter(f => (f.name || "").toLowerCase().endsWith(".svg"));
     currentFiles = svgs;
+    const generation = ++fileCheckGeneration;
+    fileChecks = svgs.map(() => ({ state: "checking", message: "Checking artwork…" }));
 
     // Keep the underlying input in sync for FormData consistency
     // (We can't programmatically set input.files reliably across browsers,
     // so we use currentFiles as the source of truth.)
+    resetOutputs();
     renderFiles();
     updateValidityUI();
-    resetOutputs();
+
+    Promise.all(svgs.map(inspectSvgFile)).then((checks) => {
+      if (generation !== fileCheckGeneration) return;
+      fileChecks = checks;
+      renderFiles();
+      updateValidityUI();
+      const problems = checks
+        .map((check, index) => check.state === "error" ? `${svgs[index].name}: ${check.message}` : null)
+        .filter(Boolean);
+      if (problems.length) {
+        setStatus("Artwork needs attention", problems.join(" "), 0, true);
+      }
+    });
   }
 
   function updateValidityUI(){
     const n = currentFiles.length;
-    const valid = (n === 1 || n === 4);
+    const validCount = (n === 1 || n === 4);
+    const checking = fileChecks.some(check => check.state === "checking");
+    const problemCount = fileChecks.filter(check => check.state === "error").length;
+    const valid = validCount && !checking && problemCount === 0;
 
     submitBtn.disabled = !valid;
     clearBtn.disabled = (n === 0);
@@ -389,14 +418,21 @@
       validHint.classList.remove("ok","bad");
       return;
     }
-    if (valid) {
-      validHint.textContent = (n === 1) ? "1 SVG (replicated ×4)" : "4 SVGs (one per slot)";
-      validHint.classList.add("ok");
-      validHint.classList.remove("bad");
-    } else {
+    if (!validCount) {
       validHint.textContent = `You selected ${n}. Must be 1 or 4.`;
       validHint.classList.add("bad");
       validHint.classList.remove("ok");
+    } else if (checking) {
+      validHint.textContent = "Checking artwork…";
+      validHint.classList.remove("ok", "bad");
+    } else if (problemCount) {
+      validHint.textContent = `${problemCount} file${problemCount === 1 ? "" : "s"} need attention`;
+      validHint.classList.add("bad");
+      validHint.classList.remove("ok");
+    } else {
+      validHint.textContent = (n === 1) ? "1 SVG ready (replicated ×4)" : "4 SVGs ready";
+      validHint.classList.add("ok");
+      validHint.classList.remove("bad");
     }
   }
 
@@ -411,16 +447,113 @@
 
     const slots = 4;
     const shown = (currentFiles.length === 1)
-      ? [currentFiles[0], currentFiles[0], currentFiles[0], currentFiles[0]]
-      : currentFiles.slice(0,4);
+      ? [0, 0, 0, 0]
+      : currentFiles.slice(0,4).map((_file, index) => index);
 
     for (let i=0;i<slots;i++){
-      const f = shown[i];
+      const sourceIndex = shown[i];
+      const f = currentFiles[sourceIndex];
+      const check = fileChecks[sourceIndex] || { state: "checking", message: "Checking artwork…" };
       const line = document.createElement("div");
       line.className = "fileline";
-      line.innerHTML = `<div><strong>Slot ${i+1}:</strong> ${escapeHtml(f.name)}</div><span class="badge">${fmtBytes(f.size)}</span>`;
+      const badgeClass = check.state === "error" ? "badge bad" : (check.state === "ok" ? "badge ok" : "badge");
+      const badgeText = check.state === "ok" ? `Ready · ${fmtBytes(f.size)}` : check.message;
+      line.innerHTML = `<div><strong>Slot ${i+1}:</strong> ${escapeHtml(f.name)}</div><span class="${badgeClass}">${escapeHtml(badgeText)}</span>`;
       fileList.appendChild(line);
     }
+  }
+
+  async function inspectSvgFile(file){
+    if (file.size > 5_000_000) {
+      return { state: "error", message: "The file is over the 5 MB limit." };
+    }
+
+    let source;
+    try {
+      source = await file.text();
+    } catch (_error) {
+      return { state: "error", message: "The browser could not read this file." };
+    }
+
+    const documentNode = new DOMParser().parseFromString(source, "image/svg+xml");
+    if (documentNode.querySelector("parsererror") || documentNode.documentElement.localName !== "svg") {
+      return { state: "error", message: "This is not a well-formed SVG file. Open the original artwork in your drawing app and save or export it again as SVG." };
+    }
+
+    const root = documentNode.documentElement;
+    const viewBox = (root.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+    if (viewBox.length !== 4 || !viewBox.every(Number.isFinite) || viewBox[2] <= 0 || viewBox[3] <= 0) {
+      return { state: "error", message: "The SVG needs a valid viewBox so it can be positioned reliably." };
+    }
+
+    const toMm = (value) => {
+      const match = String(value || "").trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(mm|cm|in|pt|pc|px)?$/i);
+      if (!match) return null;
+      const number = Number(match[1]);
+      const unit = (match[2] || "px").toLowerCase();
+      return number * ({ mm: 1, cm: 10, in: 25.4, pt: 25.4 / 72, pc: 25.4 / 6, px: 25.4 / 96 }[unit]);
+    };
+    const widthMm = toMm(root.getAttribute("width"));
+    const heightMm = toMm(root.getAttribute("height"));
+    if (widthMm !== null && heightMm !== null && (Math.abs(widthMm - 19) > 0.01 || Math.abs(heightMm - 11) > 0.01)) {
+      return { state: "error", message: `The page is ${widthMm.toFixed(2)} × ${heightMm.toFixed(2)} mm; it needs to be 19 × 11 mm.` };
+    }
+
+    const scopes = [root];
+
+    const specifiedProperty = (element, name) => {
+      const inline = element.style && element.style.getPropertyValue(name);
+      return String(inline || (element.getAttribute && element.getAttribute(name)) || "").trim().toLowerCase();
+    };
+    const inheritedProperty = (element, name, fallback = "") => {
+      let current = element;
+      while (current && current.nodeType === 1) {
+        const specified = specifiedProperty(current, name);
+        if (specified && !["inherit", "unset"].includes(specified)) return specified;
+        if (current === root) break;
+        current = current.parentElement;
+      }
+      return fallback;
+    };
+    const isVisible = (element) => {
+      let current = element;
+      while (current && current.nodeType === 1) {
+        if (specifiedProperty(current, "display") === "none") return false;
+        if (["hidden", "collapse"].includes(inheritedProperty(current, "visibility", "visible"))) return false;
+        if (specifiedProperty(current, "opacity") === "0") return false;
+        if (current === root) break;
+        current = current.parentElement;
+      }
+      return true;
+    };
+    const relevant = (selector) => scopes.flatMap(scope => Array.from(scope.querySelectorAll(selector))).filter(isVisible);
+    const shapes = relevant("path, rect, circle, ellipse, polygon, polyline");
+
+    if (relevant("text").length) {
+      return { state: "error", message: "Live text was found. Convert text to paths/outlines in your design app, then save again." };
+    }
+    const unsupported = relevant("use, image, foreignObject");
+    if (unsupported.length) {
+      return { state: "error", message: `Unsupported <${unsupported[0].localName}> content was found. Expand or convert it to ordinary vector paths.` };
+    }
+    if (!shapes.length) {
+      return { state: "error", message: "No visible vector artwork was found. Make sure your design is visible, then save the SVG again." };
+    }
+    const stroked = shapes.find(element => {
+      const stroke = inheritedProperty(element, "stroke", "none");
+      return stroke && !["none", "transparent"].includes(stroke) && inheritedProperty(element, "stroke-opacity", "1") !== "0";
+    });
+    if (stroked) {
+      return { state: "error", message: "A visible stroke was found. Convert strokes to paths/outlines so their manufactured width is unambiguous." };
+    }
+    const effect = shapes.find(element => ["clip-path", "mask", "filter"].some(name => {
+      const value = inheritedProperty(element, name, "none");
+      return value && value !== "none";
+    }));
+    if (effect) {
+      return { state: "error", message: "A clip, mask or filter effect was found. Expand or flatten that effect to vector paths." };
+    }
+    return { state: "ok", message: "Ready" };
   }
 
   function resetOutputs(){
@@ -436,7 +569,9 @@
   }
 
   clearBtn.addEventListener("click", () => {
+    fileCheckGeneration += 1;
     currentFiles = [];
+    fileChecks = [];
     svgInput.value = "";
     renderFiles();
     updateValidityUI();
@@ -447,7 +582,7 @@
     resetOutputs();
 
     const n = currentFiles.length;
-    if (!(n === 1 || n === 4)) {
+    if (!(n === 1 || n === 4) || fileChecks.length !== n || fileChecks.some(check => check.state !== "ok")) {
       updateValidityUI();
       return;
     }
@@ -511,7 +646,9 @@
 
         if (j.status === "error") {
           clearInterval(progressTimer);
-          throw new Error(j.error || "unknown error");
+          const buildError = new Error(j.error || "The artwork could not be processed.");
+          buildError.detailsUrl = j.detailsUrl || "";
+          throw buildError;
         }
 
         // keep status hint lively without changing backend
@@ -520,18 +657,32 @@
       }
 
     } catch (err) {
-      setStatus("Error", (err && err.message) ? err.message : String(err), 0, true);
+      setStatus(
+        "Couldn’t process artwork",
+        (err && err.message) ? err.message : String(err),
+        0,
+        true,
+        (err && err.detailsUrl) ? err.detailsUrl : ""
+      );
     } finally {
-      submitBtn.disabled = (currentFiles.length !== 1 && currentFiles.length !== 4);
-      clearBtn.disabled = (currentFiles.length === 0);
+      updateValidityUI();
     }
   });
 
-  function setStatus(main, meta, pct, isError=false){
+  function setStatus(main, meta, pct, isError=false, detailsUrl=""){
     statusBox.style.display = "block";
     statusMsg.textContent = main;
     statusMeta.textContent = meta || "";
     statusHint.textContent = "";
+
+    if (detailsUrl && detailsUrl.startsWith("https://github.com/")) {
+      const link = document.createElement("a");
+      link.href = detailsUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open technical details";
+      statusHint.appendChild(link);
+    }
 
     if (isError){
       statusMsg.classList.add("bad");

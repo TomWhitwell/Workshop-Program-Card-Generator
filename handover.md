@@ -209,11 +209,14 @@ SVGs **must**:
 * Convert text and strokes to outlined filled shapes
 * Assume usage as **solder-mask openings only**
 
-The converter applies nested transforms, inherited inline visibility/paint
-properties, `preserveAspectRatio`, and `evenodd`/`nonzero` fill rules. It rejects
-geometry outside the SVG canvas and SVG features that cannot be translated
-faithfully instead of silently generating misplaced artwork. The production
-workflow also requires the resolved physical size to be exactly 19 × 11 mm.
+The converter applies nested transforms, inherited visibility/paint properties,
+simple embedded CSS classes, `preserveAspectRatio`, and `evenodd`/`nonzero` fill
+rules. Geometry outside the SVG canvas is clipped like it is in a normal SVG
+renderer. All visible artwork is included regardless of layer or group names.
+Reference outlines and guide layers must be hidden or deleted before export.
+SVG features that cannot be translated faithfully fail
+with a human-readable correction. The production workflow also requires the
+resolved physical size to be exactly 19 × 11 mm.
 
 ---
 
@@ -301,7 +304,9 @@ This token can dispatch workflows but cannot modify the repo.
 ## Known Sharp Edges
 
 * Pages root directory misconfiguration silently disables Functions
-* SVG correctness is assumed, not enforced
+* Browser preflight catches common authoring problems, while the Python
+  converter remains the authoritative validator and reports its exact error
+  back to the page
 * Proof rendering is functional, not polished
 * No automatic cleanup of old jobs (yet)
 

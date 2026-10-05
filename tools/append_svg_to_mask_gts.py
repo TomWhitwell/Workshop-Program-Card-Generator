@@ -158,6 +158,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -279,15 +280,15 @@ def read_svg_viewbox(svg_path: Path) -> Tuple[float, float, float, float]:
     root = read_svg_root(svg_path)
     vb = root.attrib.get("viewBox") or root.attrib.get("viewbox")
     if not vb:
-        raise ValueError(f"{svg_path}: missing viewBox (required for reliable scaling)")
+        raise ValueError(f"{svg_path.name}: missing viewBox (required for reliable scaling)")
     try:
         parts = [float(x) for x in re.split(r"[,\s]+", vb.strip()) if x]
     except ValueError as exc:
-        raise ValueError(f"{svg_path}: malformed viewBox='{vb}'") from exc
+        raise ValueError(f"{svg_path.name}: malformed viewBox='{vb}'") from exc
     if len(parts) != 4 or not all(math.isfinite(x) for x in parts):
-        raise ValueError(f"{svg_path}: malformed viewBox='{vb}'")
+        raise ValueError(f"{svg_path.name}: malformed viewBox='{vb}'")
     if parts[2] <= 0 or parts[3] <= 0:
-        raise ValueError(f"{svg_path}: viewBox width/height must be positive, got '{vb}'")
+        raise ValueError(f"{svg_path.name}: viewBox width/height must be positive, got '{vb}'")
     return parts[0], parts[1], parts[2], parts[3]
 
 
@@ -306,7 +307,7 @@ def read_svg_physical_size_mm(svg_path: Path, fallback: Optional[Tuple[float, fl
         return fallback
 
     raise ValueError(
-        f"{svg_path}: missing width/height (or unparseable units). "
+        f"{svg_path.name}: missing width/height (or unparseable units). "
         "Either ensure width/height are set (e.g. '19mm') or pass --default-svg-size-mm W,H."
     )
 
@@ -369,8 +370,63 @@ def parse_inline_style(value: str) -> Dict[str, str]:
         if ":" not in declaration:
             raise ValueError(f"Malformed inline SVG style declaration '{declaration.strip()}'")
         name, raw_value = declaration.split(":", 1)
-        result[name.strip().lower()] = raw_value.strip()
+        result[name.strip().lower()] = re.sub(r"\s*!important\s*$", "", raw_value.strip(), flags=re.IGNORECASE)
     return result
+
+
+def _selector_matches(element: ET.Element, selector: str) -> bool:
+    """Match the simple selectors emitted by common SVG authoring tools."""
+    selector = selector.strip()
+    match = re.fullmatch(r"(?:(\*|[A-Za-z_][\w.-]*))?(#[\w.-]+)?((?:\.[\w.-]+)*)", selector)
+    if not match or not selector:
+        raise ValueError(
+            f"unsupported CSS selector '{selector}'; save as Plain SVG or convert styles to inline attributes"
+        )
+    tag, id_selector, class_selectors = match.groups()
+    if tag and tag != "*" and svg_local_name(element) != tag:
+        return False
+    if id_selector and element.attrib.get("id") != id_selector[1:]:
+        return False
+    required_classes = {value[1:] for value in re.findall(r"\.[\w.-]+", class_selectors)}
+    actual_classes = set(element.attrib.get("class", "").split())
+    return required_classes.issubset(actual_classes)
+
+
+def apply_embedded_stylesheets(svg_elements: List[ET.Element]) -> None:
+    """Inline straightforward CSS rules used by Illustrator and similar exporters."""
+    rules: List[Tuple[Tuple[int, int, int], int, str, Dict[str, str]]] = []
+    order = 0
+    for style_element in (element for element in svg_elements if svg_local_name(element) == "style"):
+        css = re.sub(r"/\*.*?\*/", "", "".join(style_element.itertext()), flags=re.DOTALL)
+        if re.search(r"@[A-Za-z-]+", css):
+            raise ValueError("SVG CSS at-rules are unsupported; save as Plain SVG or inline the artwork styles")
+        consumed = ""
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+            consumed += match.group(0)
+            declarations = parse_inline_style(match.group(2))
+            for selector in match.group(1).split(","):
+                selector = selector.strip()
+                _selector_matches(style_element, selector)
+                id_count = selector.count("#")
+                class_count = selector.count(".")
+                tag_count = 0 if selector.startswith((".", "#", "*")) else 1
+                rules.append(((id_count, class_count, tag_count), order, selector, declarations))
+                order += 1
+        if re.sub(r"\s+", "", css).strip() and re.sub(r"\s+", "", consumed) != re.sub(r"\s+", "", css):
+            raise ValueError("could not parse embedded SVG CSS; save as Plain SVG or inline the artwork styles")
+
+    if not rules:
+        return
+    for element in svg_elements:
+        matched = [rule for rule in rules if _selector_matches(element, rule[2])]
+        if not matched:
+            continue
+        stylesheet_values: Dict[str, str] = {}
+        for _specificity, _order, _selector, declarations in sorted(matched, key=lambda rule: (rule[0], rule[1])):
+            stylesheet_values.update(declarations)
+        existing_inline = element.attrib.get("style", "")
+        generated_inline = ";".join(f"{name}:{value}" for name, value in stylesheet_values.items())
+        element.attrib["style"] = ";".join(value for value in (generated_inline, existing_inline) if value)
 
 
 def element_property(element: ET.Element, name: str) -> Optional[str]:
@@ -491,24 +547,23 @@ def shape_paint_state(
 def load_svg_shapes(svg_path: Path) -> Tuple[ET.Element, List[SvgShape]]:
     raw_text = svg_path.read_text(encoding="utf-8", errors="replace")
     if re.search(r"<\?xml-stylesheet\b", raw_text, re.IGNORECASE):
-        raise ValueError(f"{svg_path}: external XML stylesheets are unsupported; inline the artwork styles")
+        raise ValueError(f"{svg_path.name}: external XML stylesheets are unsupported; inline the artwork styles")
 
     document = Document(str(svg_path))
     root = document.root
     parent_map = {child: parent for parent in root.iter() for child in parent}
     svg_elements = [element for element in root.iter() if element.tag.startswith("{" + SVG_NS + "}")]
 
-    if any(svg_local_name(element) == "style" for element in svg_elements):
-        raise ValueError(f"{svg_path}: embedded CSS stylesheets are unsupported; use inline SVG styles")
+    apply_embedded_stylesheets(svg_elements)
     if sum(svg_local_name(element) == "svg" for element in svg_elements) > 1:
-        raise ValueError(f"{svg_path}: nested <svg> viewports are unsupported; flatten the artwork first")
+        raise ValueError(f"{svg_path.name}: nested <svg> viewports are unsupported; flatten the artwork first")
 
     for element in svg_elements:
         tag = svg_local_name(element)
         if tag in UNSUPPORTED_RENDERED_TAGS:
             filled, _rule, stroke = shape_paint_state(element, parent_map)
             if filled or stroke or tag in ("use", "image", "foreignObject"):
-                raise ValueError(f"{svg_path}: <{tag}> is unsupported; {UNSUPPORTED_RENDERED_TAGS[tag]}")
+                raise ValueError(f"{svg_path.name}: <{tag}> is unsupported; {UNSUPPORTED_RENDERED_TAGS[tag]}")
 
     included: Dict[int, Tuple[str, str]] = {}
     for element in svg_elements:
@@ -519,7 +574,7 @@ def load_svg_shapes(svg_path: Path) -> Tuple[ET.Element, List[SvgShape]]:
         label = f"<{tag} id='{element.attrib.get('id', '')}'>"
         if visible_stroke:
             raise ValueError(
-                f"{svg_path}: {label} has a visible stroke; convert strokes to outlined filled paths"
+                f"{svg_path.name}: {label} has a visible stroke; convert strokes to outlined filled paths"
             )
         # SVG line elements have no fillable interior; an actual line is a stroke.
         if filled and tag != "line":
@@ -536,7 +591,10 @@ def load_svg_shapes(svg_path: Path) -> Tuple[ET.Element, List[SvgShape]]:
         if metadata is not None:
             shapes.append(SvgShape(path=path, fill_rule=metadata[0], label=metadata[1]))
     if not shapes:
-        raise ValueError(f"{svg_path}: no visible filled vector shapes were found")
+        raise ValueError(
+            f"{svg_path.name}: no visible filled vector artwork was found. "
+            "Convert text and strokes to paths, and make sure the artwork is not hidden."
+        )
     return root, shapes
 
 
@@ -564,6 +622,67 @@ def sample_subpath_to_points(sp: SvgPathT, step_user_units: float) -> List[Tuple
                 pts.append((x, y))
 
     return pts
+
+
+def clip_polygon_to_rect(
+    points: List[Tuple[float, float]],
+    min_x: float,
+    min_y: float,
+    max_x: float,
+    max_y: float,
+) -> List[Tuple[float, float]]:
+    """Clip a sampled SVG contour to its root viewport, as normal SVG rendering does."""
+    polygon = list(points)
+    if len(polygon) > 1 and all(abs(a - b) < 1e-12 for a, b in zip(polygon[0], polygon[-1])):
+        polygon.pop()
+
+    def clip_edge(inside, intersection) -> None:
+        nonlocal polygon
+        if not polygon:
+            return
+        output: List[Tuple[float, float]] = []
+        previous = polygon[-1]
+        previous_inside = inside(previous)
+        for current in polygon:
+            current_inside = inside(current)
+            if current_inside:
+                if not previous_inside:
+                    output.append(intersection(previous, current))
+                output.append(current)
+            elif previous_inside:
+                output.append(intersection(previous, current))
+            previous = current
+            previous_inside = current_inside
+        polygon = output
+
+    def at_x(first: Tuple[float, float], second: Tuple[float, float], x: float) -> Tuple[float, float]:
+        x1, y1 = first
+        x2, y2 = second
+        if abs(x2 - x1) < 1e-15:
+            return x, y1
+        return x, y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+    def at_y(first: Tuple[float, float], second: Tuple[float, float], y: float) -> Tuple[float, float]:
+        x1, y1 = first
+        x2, y2 = second
+        if abs(y2 - y1) < 1e-15:
+            return x1, y
+        return x1 + (x2 - x1) * (y - y1) / (y2 - y1), y
+
+    clip_edge(lambda point: point[0] >= min_x, lambda first, second: at_x(first, second, min_x))
+    clip_edge(lambda point: point[0] <= max_x, lambda first, second: at_x(first, second, max_x))
+    clip_edge(lambda point: point[1] >= min_y, lambda first, second: at_y(first, second, min_y))
+    clip_edge(lambda point: point[1] <= max_y, lambda first, second: at_y(first, second, max_y))
+
+    deduplicated: List[Tuple[float, float]] = []
+    for point in polygon:
+        if not deduplicated or any(abs(a - b) > 1e-10 for a, b in zip(point, deduplicated[-1])):
+            deduplicated.append(point)
+    if len(deduplicated) > 1 and all(
+        abs(a - b) < 1e-10 for a, b in zip(deduplicated[0], deduplicated[-1])
+    ):
+        deduplicated.pop()
+    return deduplicated
 
 
 def poly_area_signed(pts: List[Tuple[float, float]]) -> float:
@@ -764,7 +883,7 @@ def build_one_svg_snippet(
     """
     Convert one SVG into Gerber region statements at a single placement.
     - Parent transforms, visibility, basic shapes and fill rules are resolved first.
-    - Artwork outside the SVG viewport is rejected rather than silently misplaced.
+    - Artwork outside the SVG viewport is clipped, matching normal SVG rendering.
     - Rotation is about the centre of the SVG physical size.
     """
     viewbox = read_svg_viewbox(svg_path)
@@ -774,7 +893,7 @@ def build_one_svg_snippet(
         for actual, expected in zip(physical_mm, expected_svg_size_mm)
     ):
         raise ValueError(
-            f"{svg_path}: physical size is {physical_mm[0]:g}x{physical_mm[1]:g}mm; "
+            f"{svg_path.name}: physical size is {physical_mm[0]:g}x{physical_mm[1]:g}mm; "
             f"this job requires {expected_svg_size_mm[0]:g}x{expected_svg_size_mm[1]:g}mm"
         )
     root, shapes = load_svg_shapes(svg_path)
@@ -786,7 +905,6 @@ def build_one_svg_snippet(
 
     # Convert tolerance in mm to step in SVG user units (approx; using sx)
     tol_user = max(0.01, tolerance_mm / min(mapping.sx, mapping.sy))
-    overflow_user = max(1e-7, 0.01 / min(mapping.sx, mapping.sy))
     vb_minx, vb_miny, vb_w, vb_h = viewbox
 
     # Local centre in our "top-left anchored, y-up" coordinates:
@@ -802,27 +920,19 @@ def build_one_svg_snippet(
     out: List[str] = []
     emitted_regions = 0
     for shape in shapes:
-        try:
-            xmin, xmax, ymin, ymax = shape.path.bbox()
-        except Exception as exc:
-            raise ValueError(f"{svg_path}: could not calculate bounds for {shape.label}") from exc
-        if (
-            xmin < vb_minx - overflow_user
-            or xmax > vb_minx + vb_w + overflow_user
-            or ymin < vb_miny - overflow_user
-            or ymax > vb_miny + vb_h + overflow_user
-        ):
-            raise ValueError(
-                f"{svg_path}: {shape.label} extends outside viewBox {viewbox}; "
-                f"shape bounds are ({xmin:.3f}, {ymin:.3f})..({xmax:.3f}, {ymax:.3f})"
-            )
-
         subpaths = shape.path.continuous_subpaths()
         polys_local_mm: List[List[Tuple[float, float]]] = []
         areas: List[float] = []
 
         for sp in subpaths:
             pts_user = sample_subpath_to_points(sp, step_user_units=tol_user)
+            pts_user = clip_polygon_to_rect(
+                pts_user,
+                vb_minx,
+                vb_miny,
+                vb_minx + vb_w,
+                vb_miny + vb_h,
+            )
             if len(pts_user) < 3:
                 continue
 
@@ -833,15 +943,11 @@ def build_one_svg_snippet(
                 flip_svg_y=True,
                 svg_anchor_top_left=True,
             )
-
-            if any(
-                x < -0.01 or x > w_mm + 0.01 or y > 0.01 or y < -h_mm - 0.01
-                for x, y in poly_mm
-            ):
-                raise ValueError(
-                    f"{svg_path}: preserveAspectRatio maps {shape.label} outside the physical "
-                    f"{w_mm:g}x{h_mm:g}mm canvas; flatten or crop the SVG first"
-                )
+            # `slice` and non-uniform mappings can extend viewBox content beyond
+            # the physical viewport. SVG renderers clip that content, so do the same.
+            poly_mm = clip_polygon_to_rect(poly_mm, 0.0, -h_mm, w_mm, 0.0)
+            if len(poly_mm) < 3:
+                continue
 
             # rotate around SVG centre (in local mm coords)
             poly_mm = rotate_points_mm(poly_mm, deg_ccw=rotate_deg_ccw, center=center_local)
@@ -867,7 +973,10 @@ def build_one_svg_snippet(
         out.append("%LPD*%")  # restore
 
     if emitted_regions == 0:
-        raise ValueError(f"{svg_path}: visible vector shapes contain no filled closed regions")
+        raise ValueError(
+            f"{svg_path.name}: no filled artwork remains inside the SVG canvas. "
+            "Move or resize the artwork so it overlaps the page."
+        )
     return "".join(out)
 
 
@@ -978,4 +1087,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (ET.ParseError, OSError, ValueError) as exc:
+        print(f"Artwork error: {exc}", file=sys.stderr)
+        raise SystemExit(2)

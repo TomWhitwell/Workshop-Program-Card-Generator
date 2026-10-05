@@ -62,13 +62,18 @@ class SvgCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "convert strokes to outlined filled paths"):
             load_svg_shapes(svg)
 
-    def test_live_text_and_css_stylesheets_fail_clearly(self):
+    def test_live_text_fails_clearly(self):
         svg = self.write_svg('<text x="1" y="2">Hello</text>')
         with self.assertRaisesRegex(ValueError, "convert text to paths"):
             load_svg_shapes(svg)
-        svg = self.write_svg('<style>.art { fill: black; }</style><path class="art" d="M1 1H2V2Z"/>')
-        with self.assertRaisesRegex(ValueError, "embedded CSS stylesheets"):
-            load_svg_shapes(svg)
+
+    def test_common_embedded_css_is_applied(self):
+        svg = self.write_svg(
+            '<style>.art { fill: black; stroke: none; }</style>'
+            '<path class="art" fill="none" d="M1 1H2V2H1Z"/>'
+        )
+        _root, shapes = load_svg_shapes(svg)
+        self.assertEqual(len(shapes), 1)
 
     def test_hidden_editor_content_does_not_block_visible_artwork(self):
         svg = self.write_svg(
@@ -89,10 +94,48 @@ class SvgCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clip-path effects"):
             load_svg_shapes(svg)
 
-    def test_artwork_outside_viewbox_is_rejected(self):
+    def test_artwork_outside_viewbox_is_clipped_like_normal_svg_rendering(self):
         svg = self.write_svg('<path d="M18 1H20V2H18Z"/>')
-        with self.assertRaisesRegex(ValueError, "extends outside viewBox"):
+        snippet = build_one_svg_snippet(self.fmt, svg, (0, 0), 0, None)
+        self.assertIn("X19000000", snippet)
+        self.assertNotIn("X20000000", snippet)
+
+    def test_artwork_entirely_outside_canvas_fails_with_useful_message(self):
+        svg = self.write_svg('<path d="M20 1H21V2H20Z"/>')
+        with self.assertRaisesRegex(ValueError, "no filled artwork remains inside the SVG canvas"):
             build_one_svg_snippet(self.fmt, svg, (0, 0), 0, None)
+
+    def test_named_content_layer_does_not_exclude_other_visible_artwork(self):
+        svg = self.write_svg(
+            '<g inkscape:groupmode="layer" inkscape:label="GUIDES">'
+            '<path id="guide" d="M-1 -1H20V12H-1Z"/></g>'
+            '<g inkscape:groupmode="layer" inkscape:label="CONTENT">'
+            '<path id="artwork" d="M1 1H2V2H1Z"/></g>',
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            'width="19mm" height="11mm" viewBox="0 0 19 11"',
+        )
+        _root, shapes = load_svg_shapes(svg)
+        self.assertEqual(len(shapes), 2)
+        self.assertEqual({shape.label for shape in shapes}, {"<path id='guide'>", "<path id='artwork'>"})
+
+    def test_empty_content_layer_does_not_block_visible_artwork_elsewhere(self):
+        svg = self.write_svg(
+            '<g inkscape:groupmode="layer" inkscape:label="PCB"><path d="M0 0H19V11H0Z"/></g>'
+            '<g inkscape:groupmode="layer" inkscape:label="CONTENT"/>',
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            'width="19mm" height="11mm" viewBox="0 0 19 11"',
+        )
+        _root, shapes = load_svg_shapes(svg)
+        self.assertEqual(len(shapes), 1)
+        self.assertIn("G36*", build_one_svg_snippet(self.fmt, svg, (0, 0), 0, None))
+
+    def test_generic_named_artwork_group_is_supported(self):
+        svg = self.write_svg(
+            '<g id="guides"><path d="M0 0H19V11H0Z"/></g>'
+            '<g data-name="Artwork"><circle cx="5" cy="5" r="1"/></g>'
+        )
+        _root, shapes = load_svg_shapes(svg)
+        self.assertEqual(len(shapes), 2)
 
     def test_wrong_physical_size_is_rejected_for_fixed_card_jobs(self):
         svg = self.write_svg(

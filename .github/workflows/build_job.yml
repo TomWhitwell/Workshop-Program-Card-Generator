@@ -68,15 +68,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 tools/append_svg_to_mask_gts.py \
-            --base-gts "work/gerbers/4-up-blank-F_Mask.gts" \
-            --out-gts  "work/gerbers/4-up-blank-F_Mask.gts" \
-            --default-svg-size-mm 19,11 \
-            --expected-svg-size-mm 19,11 \
-            --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
-            --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
-            --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
-            --svg "work/in/slot4.svg" --place 86.67,43.45 --rotate 180
+          ERROR_LOG="work/out/artwork-error.txt"
+          if ! python3 tools/append_svg_to_mask_gts.py \
+              --base-gts "work/gerbers/4-up-blank-F_Mask.gts" \
+              --out-gts  "work/gerbers/4-up-blank-F_Mask.gts" \
+              --default-svg-size-mm 19,11 \
+              --expected-svg-size-mm 19,11 \
+              --svg "work/in/slot1.svg" --place 62.93,30.4  --rotate 0 \
+              --svg "work/in/slot2.svg" --place 62.93,43.4  --rotate 0 \
+              --svg "work/in/slot3.svg" --place 86.65,30.45 --rotate 180 \
+              --svg "work/in/slot4.svg" --place 86.67,43.45 --rotate 180 \
+              2> >(tee "$ERROR_LOG" >&2); then
+            exit 1
+          fi
 
       - name: Install gerbv (for proof rendering)
         run: |
@@ -164,7 +168,20 @@ jobs:
           RUNNER_SECRET: ${{ secrets.RUNNER_SHARED_SECRET }}
           SITE_BASE: https://pcg.musicthing.co.uk
         run: |
+          set -euo pipefail
+          ERROR_LOG="work/out/artwork-error.txt"
+          if test -s "$ERROR_LOG"; then
+            ERROR_MESSAGE="$(tail -n 1 "$ERROR_LOG")"
+          else
+            ERROR_MESSAGE="The build service hit an unexpected problem. Your artwork may be fine; please try again or open the technical details."
+          fi
+          DETAILS_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          PAYLOAD="$(jq -n \
+            --arg error "$ERROR_MESSAGE" \
+            --arg detailsUrl "$DETAILS_URL" \
+            '{status:"error", error:$error, detailsUrl:$detailsUrl}')"
+
           curl -sS -X POST "$SITE_BASE/api/job/$JOB_ID/update" \
             -H "content-type: application/json" \
             -H "x-runner-secret: $RUNNER_SECRET" \
-            --data '{"status":"error","error":"The PCB build failed. Please check the GitHub Actions run for details."}'
+            --data "$PAYLOAD"
